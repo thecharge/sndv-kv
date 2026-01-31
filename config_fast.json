@@ -1,0 +1,18 @@
+{
+  "data_dir": "./data_bench",
+  "wal_path": "./data_bench/wal.log",
+  "log_dir": "./logs",
+  "port": 8080,
+  "max_memtable_size": 67108864,
+  "l0_compaction_trigger": 4,
+  "sstable_block_size": 4096,
+  "bloom_fpr": 0.01,
+  "compaction_interval": 5,
+  "auth_secret": "BENCH_SECRET",
+  "durability": false,
+  "max_cpu": 8,
+  "max_system_memory": 0,
+  "enable_profiling": false,
+  "key_cache_size": 10000,
+  "log_level": "ERROR"
+}
