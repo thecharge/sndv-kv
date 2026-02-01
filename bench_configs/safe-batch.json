@@ -1,1 +1,19 @@
-{}
+{
+  "server_port": 8080,
+  "data_directory_path": "/app/data",
+  "write_ahead_log_file_path": "/app/data/wal.log",
+  "log_directory_path": "/app/logs",
+  "maximum_memtable_size_in_bytes": 67108864,
+  "level_zero_compaction_trigger_count": 4,
+  "sstable_block_size_in_bytes": 4096,
+  "bloom_filter_false_positive_rate": 0.01,
+  "compaction_interval_in_seconds": 5,
+  "authentication_secret": "BENCHMARK_SECRET",
+  "authentication_token": "",
+  "maximum_cpu_count": 0,
+  "maximum_system_memory_in_bytes": 0,
+  "enable_pprof_profiling": false,
+  "key_cache_capacity_count": 40000,
+  "log_severity_level": "INFO",
+  "enable_disk_durability": true
+}

@@ -1,7 +1,7 @@
 # ============================================================================
 # Stage 1: Unit Tests + Coverage
 # ============================================================================
-FROM golang:1.23-alpine AS unit-tests
+FROM golang:1.25-alpine AS unit-tests
 
 RUN apk add --no-cache git
 
@@ -29,7 +29,7 @@ RUN go tool cover -func=/artifacts/unit-tests/coverage.out \
 # ============================================================================
 # Stage 2: CPU & Memory Benchmarks
 # ============================================================================
-FROM golang:1.23-alpine AS benchmarks
+FROM golang:1.25-alpine AS benchmarks
 
 RUN apk add --no-cache git
 
@@ -56,7 +56,7 @@ RUN go tool pprof -text -nodecount=20 \
 # ============================================================================
 # Stage 3: Build with Metrics
 # ============================================================================
-FROM golang:1.23-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
 RUN apk add --no-cache git
 
