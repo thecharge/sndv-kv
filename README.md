@@ -228,6 +228,26 @@ For now
 2. A comperhensive multi stage build and test `python bench_orchestrator.py` is in place so you can see the full suite, tests and benches done
 When I habve time I will add more detailed explanations of the suites and their metrics.
 
+Here is the last quick benchmark I ran:
+evidence for the last quick bench in the results.json in th eroot of the repository (Have that it may vary from PC to PC the bench orchestrator uses much more evidence and integration test data - but is docker and python bound as well as it will require much more time to run in future a seprate folder with version to version benchmarks and configurations will be in place - but for now I do not have time to polish and will wait until there is a time for production or someone decides to implement that in MR)
+
+```bash
+python .\quick_bench.py
+Building...
+Starting server...
+
+Single ops (200)...
+  175 TPS
+
+Batch ops (1000)...
+  13,451 TPS
+
+========================================
+Single:        175 TPS
+Batch:      13,451 TPS
+========================================
+```
+
 **We're slower than production systems.** That's expected for:
 
 - Research codebase vs production
