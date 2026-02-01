@@ -10,6 +10,7 @@ import (
 	"sndv-kv/internal/logger"
 	"sndv-kv/internal/metrics"
 	"sndv-kv/internal/storage"
+	"sync"
 	"time"
 
 	"github.com/o1egl/paseto"
@@ -32,6 +33,10 @@ type BatchPutRequestPayload struct {
 		Value      string `json:"value"`
 		TimeToLive int    `json:"ttl"`
 	} `json:"items"`
+}
+
+var encoderPool = sync.Pool{
+	New: func() interface{} { return json.NewEncoder(nil) },
 }
 
 func (router *HttpApiRouter) GetFastHTTPHandler() fasthttp.RequestHandler {

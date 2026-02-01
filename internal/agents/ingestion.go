@@ -26,9 +26,18 @@ type BatchIngestReq struct {
 	ResponseChannel chan error
 }
 
+type ShardChannels struct {
+	SingleQueue chan *IngestReq
+	BatchQueue  chan *BatchIngestReq
+}
+
 var (
-	shardQueues  []chan interface{}
-	numShards    int
+	shardChannels []ShardChannels
+	numShards     int
+
+	reqPool = sync.Pool{
+		New: func() interface{} { return &IngestReq{} },
+	}
 	respChanPool = sync.Pool{
 		New: func() interface{} { return make(chan error, 1) },
 	}
@@ -40,10 +49,13 @@ func InitializeIngestionSubsystem(bb *core.SystemState) {
 		numShards = bb.Configuration.MaximumCpuCount
 	}
 
-	shardQueues = make([]chan interface{}, numShards)
+	shardChannels = make([]ShardChannels, numShards)
 	for i := 0; i < numShards; i++ {
-		shardQueues[i] = make(chan interface{}, 10000)
-		go runShard(i, shardQueues[i], bb)
+		shardChannels[i] = ShardChannels{
+			SingleQueue: make(chan *IngestReq, 10000),
+			BatchQueue:  make(chan *BatchIngestReq, 100),
+		}
+		go runShard(i, shardChannels[i], bb)
 	}
 	logger.LogInfoEvent("Ingest initialized with %d shards", numShards)
 }
@@ -53,17 +65,24 @@ func SubmitIngestionRequest(key string, val []byte, ttl int, deleted bool) error
 	h.Write([]byte(key))
 	shardID := int(h.Sum32()) % numShards
 
+	req := reqPool.Get().(*IngestReq)
+	req.Key = key
+	req.Val = val
+	req.TTL = ttl
+	req.IsDeleted = deleted
+
 	respChan := respChanPool.Get().(chan error)
-	shardQueues[shardID] <- IngestReq{
-		Key:             key,
-		Val:             val,
-		TTL:             ttl,
-		IsDeleted:       deleted,
-		ResponseChannel: respChan,
-	}
+	req.ResponseChannel = respChan
+
+	shardChannels[shardID].SingleQueue <- req
 
 	err := <-respChan
+
 	respChanPool.Put(respChan)
+	req.Val = nil
+	req.Key = ""
+	reqPool.Put(req)
+
 	return err
 }
 
@@ -98,56 +117,51 @@ func dispatchAndAwaitBatches(batches map[int][]IngestReq) error {
 	responseChan := make(chan error, activeShards)
 
 	for id, items := range batches {
-		shardQueues[id] <- BatchIngestReq{
+		req := &BatchIngestReq{
 			Items:           items,
 			ResponseChannel: responseChan,
 		}
+		shardChannels[id].BatchQueue <- req
 	}
 
 	var finalErr error
 	for i := 0; i < activeShards; i++ {
-		if err := <-responseChan; err != nil && finalErr == nil {
+		err := <-responseChan
+		if err != nil && finalErr == nil {
 			finalErr = err
 		}
 	}
 	return finalErr
 }
 
-func runShard(id int, queue chan interface{}, bb *core.SystemState) {
+func runShard(id int, chans ShardChannels, bb *core.SystemState) {
 	itemBuffer := make([]IngestReq, 0, 1000)
 
-	for payload := range queue {
-		switch req := payload.(type) {
-		case IngestReq:
-			itemBuffer = append(itemBuffer, req)
-			drainQueue(queue, &itemBuffer)
+	for {
+		select {
+		case req := <-chans.SingleQueue:
+			itemBuffer = append(itemBuffer, *req)
+			drainSingleQueue(chans.SingleQueue, &itemBuffer)
 			processBatch(id, itemBuffer, bb)
 			itemBuffer = itemBuffer[:0]
 
-		case BatchIngestReq:
-			processBatch(id, req.Items, bb)
-			req.ResponseChannel <- nil
+		case batch := <-chans.BatchQueue:
+			processBatch(id, batch.Items, bb)
+			batch.ResponseChannel <- nil
 		}
 	}
 }
 
-func drainQueue(queue chan interface{}, batch *[]IngestReq) {
-	for i := 0; i < 100; i++ {
-		select {
-		case payload := <-queue:
-			appendIfSingle(batch, payload, queue)
-		default:
-			return
-		}
+func drainSingleQueue(queue chan *IngestReq, batch *[]IngestReq) {
+	count := len(queue)
+	if count > 100 {
+		count = 100
 	}
-}
-
-func appendIfSingle(batch *[]IngestReq, payload interface{}, queue chan interface{}) {
-	switch req := payload.(type) {
-	case IngestReq:
-		*batch = append(*batch, req)
-	default:
-		go func() { queue <- payload }()
+	// Deterministic read based on length snapshot.
+	// Safe because we are the only consumer.
+	for i := 0; i < count; i++ {
+		req := <-queue
+		*batch = append(*batch, *req)
 	}
 }
 
@@ -238,6 +252,7 @@ func rotateMemTable(bb *core.SystemState) {
 func rotateWal(bb *core.SystemState) {
 	newPath := fmt.Sprintf("%s.%d", bb.Configuration.WriteAheadLogFilePath, time.Now().UnixNano())
 	nw, err := storage.NewDiskWAL(newPath, true)
+
 	if err != nil {
 		logger.LogErrorEvent("WAL Rotate Failed: %v", err)
 		return

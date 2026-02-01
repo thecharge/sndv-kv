@@ -4,7 +4,6 @@ all: test benchmark
 # go env -w CGO_ENABLED=1
 
 test:
-	git clean -fdx
 	go test ./... -v -cover
 
 test-coverage:
@@ -12,7 +11,6 @@ test-coverage:
 	./scripts/test_coverage.sh
 
 test-race:
- 	git clean -fdx
 	go test ./... -race
 
 benchmark:
@@ -37,3 +35,7 @@ clean:
 	rm -rf benchmark_reports coverage.out *.prof sndv-kv-bench
 fmt: 
 	go fmt ./...
+gclean:
+	git clean -fdx
+unit:
+	go test ./...

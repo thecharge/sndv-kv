@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"runtime"
+	"runtime/debug"
 	"sndv-kv/internal/agents"
 	"sndv-kv/internal/api"
 	"sndv-kv/internal/common"
@@ -58,6 +59,8 @@ func configureRuntime(cfg config.SystemConfiguration) {
 	if cfg.MaximumCpuCount > 0 {
 		runtime.GOMAXPROCS(cfg.MaximumCpuCount)
 	}
+	// High Throughput Tuning: Less frequent GC
+	debug.SetGCPercent(200)
 }
 
 func recoverWal(system *core.SystemState) error {

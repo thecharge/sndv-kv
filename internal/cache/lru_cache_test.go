@@ -4,68 +4,60 @@ import (
 	"testing"
 )
 
-func TestLruCache_InsertAndRetrieve(t *testing.T) {
-	cache := NewLruCache(2)
+func TestLruCache_AllOps(t *testing.T) {
+	c := NewLruCache(2)
 
-	cache.InsertIntoCache("key1", []byte("val1"))
-	val, found := cache.RetrieveFromCache("key1")
-
-	if !found {
-		t.Error("Expected key1 to be found")
+	// Insert
+	c.InsertIntoCache("k1", []byte("v1"))
+	val, ok := c.RetrieveFromCache("k1")
+	if !ok || string(val) != "v1" {
+		t.Error("Insert/Retrieve failed")
 	}
-	if string(val) != "val1" {
-		t.Errorf("Expected val1, got %s", val)
+
+	// Update
+	c.InsertIntoCache("k1", []byte("v1_updated"))
+	val, _ = c.RetrieveFromCache("k1")
+	if string(val) != "v1_updated" {
+		t.Error("Update failed")
+	}
+
+	// Eviction
+	c.InsertIntoCache("k2", []byte("v2"))
+	c.InsertIntoCache("k3", []byte("v3")) // Should evict k1 (LRU) since we accessed it last before k2? No, we updated k1. k1 is MRU.
+	// Wait, InsertIntoCache moves to front.
+	// Sequence:
+	// 1. Insert k1 (Front: k1)
+	// 2. Update k1 (Front: k1)
+	// 3. Insert k2 (Front: k2, k1)
+	// 4. Insert k3 (Front: k3, k2). k1 evicted.
+
+	if _, ok := c.RetrieveFromCache("k1"); ok {
+		t.Error("k1 should be evicted")
+	}
+	if _, ok := c.RetrieveFromCache("k2"); !ok {
+		t.Error("k2 should exist")
+	}
+
+	// Remove
+	c.RemoveFromCache("k2")
+	if _, ok := c.RetrieveFromCache("k2"); ok {
+		t.Error("k2 should be removed")
+	}
+
+	// Retrieve Missing
+	if _, ok := c.RetrieveFromCache("missing"); ok {
+		t.Error("Found missing key")
 	}
 }
 
-func TestLruCache_UpdateExisting(t *testing.T) {
-	cache := NewLruCache(2)
+func TestLruCache_EdgeCases(t *testing.T) {
+	c := NewLruCache(1)
+	c.RemoveFromCache("missing") // Should not panic
 
-	cache.InsertIntoCache("key1", []byte("val1"))
-	cache.InsertIntoCache("key1", []byte("val1-updated"))
+	c.InsertIntoCache("k1", []byte("v1"))
+	c.InsertIntoCache("k2", []byte("v2")) // Trigger eviction with capacity 1
 
-	val, _ := cache.RetrieveFromCache("key1")
-	if string(val) != "val1-updated" {
-		t.Errorf("Expected updated value, got %s", val)
-	}
-}
-
-func TestLruCache_Eviction(t *testing.T) {
-	cache := NewLruCache(2)
-
-	cache.InsertIntoCache("key1", []byte("val1"))
-	cache.InsertIntoCache("key2", []byte("val2"))
-	// Access key1 to make key2 LRU
-	cache.RetrieveFromCache("key1")
-
-	// Insert key3, should evict key2
-	cache.InsertIntoCache("key3", []byte("val3"))
-
-	if _, found := cache.RetrieveFromCache("key2"); found {
-		t.Error("Expected key2 to be evicted")
-	}
-	if _, found := cache.RetrieveFromCache("key1"); !found {
-		t.Error("Expected key1 to remain")
-	}
-}
-
-func TestLruCache_Remove(t *testing.T) {
-	cache := NewLruCache(2)
-	cache.InsertIntoCache("key1", []byte("val1"))
-
-	cache.RemoveFromCache("key1")
-
-	if _, found := cache.RetrieveFromCache("key1"); found {
-		t.Error("Expected key1 to be removed")
-	}
-
-	// Remove non-existent safe check
-	cache.RemoveFromCache("key-missing")
-}
-
-func TestLruCache_RetrieveMissing(t *testing.T) {
-	cache := NewLruCache(2)
-	if _, found := cache.RetrieveFromCache("missing"); found {
-		t.Error("Expected false for missing key")
+	if _, ok := c.RetrieveFromCache("k1"); ok {
+		t.Error("k1 should be evicted")
 	}
 }

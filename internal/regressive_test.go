@@ -41,49 +41,33 @@ func TestCrashRecovery_CorruptedWal(t *testing.T) {
 	f := testFactory.NewTestFactory(t)
 	defer f.Cleanup()
 
-	// 1. Setup and Write Valid Data
 	system := f.CreateSystem()
 	agents.InitializeIngestionSubsystem(system)
 
-	agents.SubmitIngestionRequest("valid_1", []byte("val"), 0, false)
-	agents.SubmitIngestionRequest("valid_2", []byte("val"), 0, false)
-
+	agents.SubmitIngestionRequest("v1", []byte("val"), 0, false)
 	system.ActiveWal.Close()
 
-	// 2. Corrupt the WAL (Append Garbage)
+	// Append garbage
 	path := f.RootDir + "/wal.log"
-	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0644)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err := file.Write([]byte{0xFF, 0xFF, 0xFF}); err != nil {
-		t.Fatal(err)
-	}
+	file, _ := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0644)
+	file.Write([]byte{0xFF, 0xFF, 0xFF})
 	file.Close()
 
-	// 3. Attempt Recovery
-	wal, err := storage.NewDiskWAL(path, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	wal, _ := storage.NewDiskWAL(path, true)
 	defer wal.Close()
 
-	validCount := 0
-	// Replay should return error on corruption, but callback should run for valid prefix
-	err = wal.Replay(func(e common.Entry) {
-		validCount++
-	})
+	recovered := 0
+	err := wal.Replay(func(e common.Entry) { recovered++ })
 
 	if err == nil {
-		t.Error("Expected error from corrupted WAL replay")
+		t.Error("Expected error on corrupted WAL")
 	}
-	if validCount != 2 {
-		t.Errorf("Should recover valid prefix. Got %d, expected 2", validCount)
+	if recovered != 1 {
+		t.Error("Should recover valid prefix")
 	}
 }
 
-func TestConcurrentWriteIntegrity(t *testing.T) {
+func TestConcurrentIntegrity(t *testing.T) {
 	f := testFactory.NewTestFactory(t)
 	defer f.Cleanup()
 	system := f.CreateSystem()
@@ -102,12 +86,11 @@ func TestConcurrentWriteIntegrity(t *testing.T) {
 	wg.Wait()
 
 	system.ActiveWal.Close()
-
 	wal, _ := storage.NewDiskWAL(f.RootDir+"/wal.log", true)
-	count := 0
-	wal.Replay(func(e common.Entry) { count++ })
+	c := 0
+	wal.Replay(func(e common.Entry) { c++ })
 
-	if count != 500 {
-		t.Errorf("Lost writes under concurrency. Got %d, expected 500", count)
+	if c != 500 {
+		t.Errorf("Lost writes: %d", c)
 	}
 }

@@ -13,14 +13,17 @@ type SystemState struct {
 
 	MemTable     common.KeyValueStore
 	ImmutableMem []common.KeyValueStore
-	ActiveWal    common.WriteAheadLog
-	FrozenWALs   []common.WriteAheadLog
-	SSTables     [][]storage.SSTableMetadata
-	BloomFilter  common.BloomFilter
+
+	ActiveWal  common.WriteAheadLog
+	FrozenWALs []common.WriteAheadLog
+
+	SSTables    [][]storage.SSTableMetadata
+	BloomFilter common.BloomFilter
 
 	Mutex          sync.RWMutex
 	FlushCondition *sync.Cond
-	KeyCache       *cache.LruCache
+
+	KeyCache *cache.LruCache
 }
 
 func NewSystemState(cfg config.SystemConfiguration) *SystemState {

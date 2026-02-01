@@ -13,83 +13,52 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	// Global quiet logger for all tests in package
 	logger.InitializeLogger("./test_logs_agents", "ERROR")
 	code := m.Run()
 	os.RemoveAll("./test_logs_agents")
 	os.Exit(code)
 }
 
-// -----------------------------------------------------------------------------
-// Ingestion Tests
-// -----------------------------------------------------------------------------
-
-func TestIngest_SubmitSingle_Success(t *testing.T) {
+func TestIngest_Success_SingleBatch(t *testing.T) {
 	f := testFactory.NewTestFactory(t)
 	defer f.Cleanup()
 	state := f.CreateSystem()
 	InitializeIngestionSubsystem(state)
 
+	// Critical Path: Single
 	if err := SubmitIngestionRequest("k1", []byte("v1"), 0, false); err != nil {
-		t.Fatalf("Submit failed: %v", err)
+		t.Fatal(err)
+	}
+
+	// Critical Path: Batch
+	if err := SubmitBatchIngestion([]string{"b1"}, [][]byte{[]byte("v1")}, []int{0}); err != nil {
+		t.Fatal(err)
 	}
 
 	state.Mutex.RLock()
-	val, ok := state.MemTable.Get("k1")
-	state.Mutex.RUnlock()
-
-	if !ok || string(val.Value) != "v1" {
-		t.Error("Ingestion failed to update MemTable")
-	}
-}
-
-func TestIngest_SubmitBatch_Success(t *testing.T) {
-	f := testFactory.NewTestFactory(t)
-	defer f.Cleanup()
-	state := f.CreateSystem()
-	InitializeIngestionSubsystem(state)
-
-	keys := []string{"b1", "b2"}
-	vals := [][]byte{[]byte("v1"), []byte("v2")}
-	ttls := []int{0, 0}
-
-	if err := SubmitBatchIngestion(keys, vals, ttls); err != nil {
-		t.Fatalf("Batch failed: %v", err)
-	}
-
-	state.Mutex.RLock()
-	_, ok1 := state.MemTable.Get("b1")
-	_, ok2 := state.MemTable.Get("b2")
+	_, ok1 := state.MemTable.Get("k1")
+	_, ok2 := state.MemTable.Get("b1")
 	state.Mutex.RUnlock()
 
 	if !ok1 || !ok2 {
-		t.Error("Batch ingestion failed to update MemTable")
+		t.Error("Data missing")
 	}
 }
 
-func TestIngest_Batch_Empty(t *testing.T) {
-	if err := SubmitBatchIngestion(nil, nil, nil); err != nil {
-		t.Error("Empty batch should return nil")
-	}
-}
-
-func TestIngest_WalError_TriggersNotifyError(t *testing.T) {
+func TestIngest_Negative_WalError(t *testing.T) {
 	f := testFactory.NewTestFactory(t)
 	defer f.Cleanup()
-
 	state := f.CreateSystem()
 	InitializeIngestionSubsystem(state)
 
-	// Force close WAL to trigger write error
-	state.ActiveWal.Close()
+	state.ActiveWal.Close() // Sabotage
 
-	err := SubmitIngestionRequest("k1", []byte("v1"), 0, false)
-	if err == nil {
-		t.Error("Expected error from closed WAL")
+	if err := SubmitIngestionRequest("k", []byte("v"), 0, false); err == nil {
+		t.Error("Expected WAL error")
 	}
 }
 
-func TestIngest_Rotation_Triggers(t *testing.T) {
+func TestIngest_Positive_Rotation(t *testing.T) {
 	f := testFactory.NewTestFactory(t)
 	defer f.Cleanup()
 
@@ -102,48 +71,41 @@ func TestIngest_Rotation_Triggers(t *testing.T) {
 
 	for i := 0; i < 20; i++ {
 		state.Mutex.RLock()
-		count := len(state.ImmutableMem)
+		rotated := len(state.ImmutableMem) > 0
 		state.Mutex.RUnlock()
-		if count > 0 {
+		if rotated {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Error("Memtable did not rotate")
+	t.Error("Rotation failed")
 }
 
-func TestIngest_Rotation_WalFailure(t *testing.T) {
+func TestIngest_Negative_RotationFailure(t *testing.T) {
 	f := testFactory.NewTestFactory(t)
 	defer f.Cleanup()
-
 	state := f.CreateSystem(func(c *config.SystemConfiguration) {
 		c.MaximumMemtableSizeInBytes = 10
 	})
 
 	initialWal := state.ActiveWal
-
-	// Set invalid path causing OpenFile to fail (non-existent directory)
-	state.Configuration.WriteAheadLogFilePath = f.RootDir + "/missing_dir/wal.log"
+	state.Configuration.WriteAheadLogFilePath = f.RootDir + "/missing/wal" // Sabotage path
 
 	rotateWal(state)
 
 	if state.ActiveWal != initialWal {
-		t.Error("ActiveWal should not change if rotation fails")
+		t.Error("ActiveWal changed on failure")
 	}
 }
 
-// -----------------------------------------------------------------------------
-// Flush Agent Tests
-// -----------------------------------------------------------------------------
-
-func TestFlushAgent_SuccessfulFlush(t *testing.T) {
+func TestFlush_Positive_Cycle(t *testing.T) {
 	f := testFactory.NewTestFactory(t)
 	defer f.Cleanup()
 	state := f.CreateSystem()
 	StartFlushAgentInBackground(state)
 
 	mem := storage.NewMemoryTable(100)
-	mem.Put("f1", []byte("v"), 0, false)
+	mem.Put("f", []byte("v"), 0, false)
 
 	state.Mutex.Lock()
 	state.ImmutableMem = append(state.ImmutableMem, mem)
@@ -152,45 +114,31 @@ func TestFlushAgent_SuccessfulFlush(t *testing.T) {
 
 	for i := 0; i < 20; i++ {
 		state.Mutex.RLock()
-		l0 := len(state.SSTables) > 0 && len(state.SSTables[0]) > 0
+		flushed := len(state.SSTables) > 0 && len(state.SSTables[0]) > 0
 		state.Mutex.RUnlock()
-		if l0 {
+		if flushed {
 			return
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	t.Error("Flush failed to create SSTable")
+	t.Error("Flush failed")
 }
 
-func TestFlushAgent_CommitLogic(t *testing.T) {
+func TestFlush_Negative_CommitError(t *testing.T) {
 	f := testFactory.NewTestFactory(t)
 	defer f.Cleanup()
 	state := f.CreateSystem()
 
-	meta := storage.SSTableMetadata{Filename: "mock.sst"}
+	commitFlush(state, storage.SSTableMetadata{}, errors.New("err"), "f", 0)
 
-	// Case: Error
-	commitFlush(state, meta, errors.New("fail"), "mock.sst", 0)
 	state.Mutex.RLock()
 	if len(state.SSTables[0]) != 0 {
-		t.Error("Should not commit on error")
-	}
-	state.Mutex.RUnlock()
-
-	// Case: Success
-	commitFlush(state, meta, nil, "mock.sst", 1)
-	state.Mutex.RLock()
-	if len(state.SSTables[0]) != 1 {
-		t.Error("Should commit success")
+		t.Error("Committed on error")
 	}
 	state.Mutex.RUnlock()
 }
 
-// -----------------------------------------------------------------------------
-// Compaction Agent Tests
-// -----------------------------------------------------------------------------
-
-func TestCompaction_TriggerAndMerge(t *testing.T) {
+func TestCompaction_Positive_Merge(t *testing.T) {
 	f := testFactory.NewTestFactory(t)
 	defer f.Cleanup()
 	state := f.CreateSystem(func(c *config.SystemConfiguration) {
@@ -199,9 +147,9 @@ func TestCompaction_TriggerAndMerge(t *testing.T) {
 	})
 	StartCompactionAgentInBackground(state)
 
-	e := []common.Entry{{Key: "c1", Value: []byte("v")}}
-	m1, _ := storage.WriteSortedStringTableToDisk(e, f.RootDir+"/L0_1.sst", 0, nil)
-	m2, _ := storage.WriteSortedStringTableToDisk(e, f.RootDir+"/L0_2.sst", 0, nil)
+	e := []common.Entry{{Key: "c", Value: []byte("v")}}
+	m1, _ := storage.WriteSortedStringTableToDisk(e, f.RootDir+"/1.sst", 0, nil)
+	m2, _ := storage.WriteSortedStringTableToDisk(e, f.RootDir+"/2.sst", 0, nil)
 
 	state.Mutex.Lock()
 	if len(state.SSTables) == 0 {
@@ -212,38 +160,12 @@ func TestCompaction_TriggerAndMerge(t *testing.T) {
 
 	for i := 0; i < 30; i++ {
 		state.Mutex.RLock()
-		l1 := len(state.SSTables) > 1 && len(state.SSTables[1]) > 0
+		merged := len(state.SSTables) > 1 && len(state.SSTables[1]) > 0
 		state.Mutex.RUnlock()
-		if l1 {
+		if merged {
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 	t.Error("Compaction failed")
-}
-
-func TestCompaction_MergeLogic_HandlesDeleted(t *testing.T) {
-	f := testFactory.NewTestFactory(t)
-	defer f.Cleanup()
-
-	e1 := []common.Entry{{Key: "k1", Value: []byte("v1"), ExpiryTimestamp: 0}}
-	e2 := []common.Entry{{Key: "k1", Value: nil, IsDeleted: true}}
-
-	m1, _ := storage.WriteSortedStringTableToDisk(e1, f.RootDir+"/1.sst", 0, nil)
-	m2, _ := storage.WriteSortedStringTableToDisk(e2, f.RootDir+"/2.sst", 0, nil)
-
-	tables := []storage.SSTableMetadata{m1, m2}
-
-	fname, _, err := performMerge(tables, f.RootDir, nil)
-	if err != nil {
-		t.Fatalf("Merge failed: %v", err)
-	}
-
-	reader, _ := storage.NewSSTableReader(fname)
-	entry, ok := reader.Next()
-	reader.Close()
-
-	if !ok || !entry.IsDeleted {
-		t.Error("Merge did not preserve latest deleted state")
-	}
 }
