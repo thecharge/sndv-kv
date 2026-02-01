@@ -25,7 +25,9 @@ func TestCrashRecovery_Standard(t *testing.T) {
 	system.ActiveWal.Close()
 
 	wal, err := storage.NewDiskWAL(f.RootDir+"/wal.log", true)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	count := 0
 	wal.Replay(func(e common.Entry) { count++ })
@@ -42,17 +44,19 @@ func TestCrashRecovery_CorruptedWal(t *testing.T) {
 	// 1. Setup and Write Valid Data
 	system := f.CreateSystem()
 	agents.InitializeIngestionSubsystem(system)
-	
+
 	agents.SubmitIngestionRequest("valid_1", []byte("val"), 0, false)
 	agents.SubmitIngestionRequest("valid_2", []byte("val"), 0, false)
-	
+
 	system.ActiveWal.Close()
 
 	// 2. Corrupt the WAL (Append Garbage)
 	path := f.RootDir + "/wal.log"
 	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0644)
-	if err != nil { t.Fatal(err) }
-	
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	if _, err := file.Write([]byte{0xFF, 0xFF, 0xFF}); err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +64,9 @@ func TestCrashRecovery_CorruptedWal(t *testing.T) {
 
 	// 3. Attempt Recovery
 	wal, err := storage.NewDiskWAL(path, true)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer wal.Close()
 
 	validCount := 0
@@ -96,11 +102,11 @@ func TestConcurrentWriteIntegrity(t *testing.T) {
 	wg.Wait()
 
 	system.ActiveWal.Close()
-	
+
 	wal, _ := storage.NewDiskWAL(f.RootDir+"/wal.log", true)
 	count := 0
 	wal.Replay(func(e common.Entry) { count++ })
-	
+
 	if count != 500 {
 		t.Errorf("Lost writes under concurrency. Got %d, expected 500", count)
 	}

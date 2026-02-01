@@ -242,7 +242,7 @@ func rotateWal(bb *core.SystemState) {
 		logger.LogErrorEvent("WAL Rotate Failed: %v", err)
 		return
 	}
-	
+
 	bb.FrozenWALs = append(bb.FrozenWALs, bb.ActiveWal)
 	bb.ActiveWal = nw
 }
