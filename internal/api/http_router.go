@@ -34,7 +34,6 @@ type BatchPutRequestPayload struct {
 	} `json:"items"`
 }
 
-// GetFastHTTPHandler returns the main entry point for fasthttp
 func (router *HttpApiRouter) GetFastHTTPHandler() fasthttp.RequestHandler {
 	return func(ctx *fasthttp.RequestCtx) {
 		router.handleRequest(ctx)
@@ -42,57 +41,32 @@ func (router *HttpApiRouter) GetFastHTTPHandler() fasthttp.RequestHandler {
 }
 
 func (router *HttpApiRouter) handleRequest(ctx *fasthttp.RequestCtx) {
-	// 1. Logging & Panic Recovery
 	startTime := time.Now()
 	defer func() {
-		if r := recover(); r != nil {
-			logger.LogErrorEvent("PANIC: %v\n%s", r, debug.Stack())
-			ctx.Error("Internal Server Error", fasthttp.StatusInternalServerError)
-		}
+		recoverPanic(ctx)
 		logger.LogAccessEvent("%s %s %s %v", string(ctx.Method()), string(ctx.Path()), ctx.RemoteAddr(), time.Since(startTime))
 	}()
 
-	// 2. Auth Middleware
 	if !router.checkAuth(ctx) {
 		ctx.Error("Unauthorized", fasthttp.StatusUnauthorized)
 		return
 	}
 
-	// 3. Routing
-	path := string(ctx.Path())
-	// used after testing the routes with switch/case were with magnitude 2.5 faster than regular early return statements
-	// will be evaluated in future
-	switch path {
+	router.routePath(ctx)
+}
+
+func (router *HttpApiRouter) routePath(ctx *fasthttp.RequestCtx) {
+	switch string(ctx.Path()) {
 	case "/put":
-		if ctx.IsPost() || ctx.IsPut() {
-			router.HandleSinglePutRequest(ctx)
-		} else {
-			ctx.Error("Method Not Allowed", fasthttp.StatusMethodNotAllowed)
-		}
+		router.HandleSinglePutRequest(ctx)
 	case "/get":
-		if ctx.IsGet() {
-			router.HandleGetRequest(ctx)
-		} else {
-			ctx.Error("Method Not Allowed", fasthttp.StatusMethodNotAllowed)
-		}
+		router.HandleGetRequest(ctx)
 	case "/batch":
-		if ctx.IsPost() {
-			router.HandleBatchPutRequest(ctx)
-		} else {
-			ctx.Error("Method Not Allowed", fasthttp.StatusMethodNotAllowed)
-		}
+		router.HandleBatchPutRequest(ctx)
 	case "/delete":
-		if ctx.IsDelete() || ctx.IsPost() { // Allow POST for easier client use
-			router.HandleDeleteRequest(ctx)
-		} else {
-			ctx.Error("Method Not Allowed", fasthttp.StatusMethodNotAllowed)
-		}
+		router.HandleDeleteRequest(ctx)
 	case "/metrics":
-		if ctx.IsGet() {
-			router.HandleMetricsRequest(ctx)
-		} else {
-			ctx.Error("Method Not Allowed", fasthttp.StatusMethodNotAllowed)
-		}
+		router.HandleMetricsRequest(ctx)
 	default:
 		ctx.Error("Not Found", fasthttp.StatusNotFound)
 	}
@@ -114,14 +88,17 @@ func (router *HttpApiRouter) checkAuth(ctx *fasthttp.RequestCtx) bool {
 }
 
 func (router *HttpApiRouter) HandleSinglePutRequest(ctx *fasthttp.RequestCtx) {
+	if !isMethodAllowed(ctx, "POST", "PUT") {
+		return
+	}
+
 	var payload SinglePutRequestPayload
 	if err := json.Unmarshal(ctx.PostBody(), &payload); err != nil {
-		ctx.Error("Bad Request: Invalid JSON", fasthttp.StatusBadRequest)
+		ctx.Error("Bad Request", fasthttp.StatusBadRequest)
 		return
 	}
 
 	if err := agents.SubmitIngestionRequest(payload.Key, []byte(payload.Value), payload.TimeToLive, false); err != nil {
-		logger.LogErrorEvent("PUT Failed: %v", err)
 		ctx.Error(err.Error(), fasthttp.StatusInternalServerError)
 		return
 	}
@@ -129,53 +106,61 @@ func (router *HttpApiRouter) HandleSinglePutRequest(ctx *fasthttp.RequestCtx) {
 }
 
 func (router *HttpApiRouter) HandleGetRequest(ctx *fasthttp.RequestCtx) {
-	keyBytes := ctx.QueryArgs().Peek("key")
-	if len(keyBytes) == 0 {
+	if !isMethodAllowed(ctx, "GET") {
+		return
+	}
+
+	key := string(ctx.QueryArgs().Peek("key"))
+	if key == "" {
 		ctx.Error("Missing key", fasthttp.StatusBadRequest)
 		return
 	}
-	key := string(keyBytes)
 
-	if tryCache(ctx, router.SystemState, key) {
-		return
-	}
-	if tryMemory(ctx, router.SystemState, key) {
-		return
-	}
-	if tryDisk(ctx, router.SystemState, key) {
+	if router.findAndServe(ctx, key) {
 		return
 	}
 
 	ctx.Error("Not Found", fasthttp.StatusNotFound)
 }
 
-func tryCache(ctx *fasthttp.RequestCtx, state *core.SystemState, key string) bool {
-	if state.KeyCache != nil {
-		if val, hit := state.KeyCache.Retrieve(key); hit {
-			updateMetrics()
-			writeJSON(ctx, key, val)
-			return true
-		}
+func (router *HttpApiRouter) findAndServe(ctx *fasthttp.RequestCtx, key string) bool {
+	if tryServeFromCache(ctx, router.SystemState, key) {
+		return true
+	}
+	if tryServeFromMemory(ctx, router.SystemState, key) {
+		return true
+	}
+	return tryServeFromDisk(ctx, router.SystemState, key)
+}
+
+func tryServeFromCache(ctx *fasthttp.RequestCtx, state *core.SystemState, key string) bool {
+	if state.KeyCache == nil {
+		return false
+	}
+	if val, hit := state.KeyCache.RetrieveFromCache(key); hit {
+		updateMetrics()
+		writeJSON(ctx, key, val)
+		return true
 	}
 	return false
 }
 
-func tryMemory(ctx *fasthttp.RequestCtx, state *core.SystemState, key string) bool {
+func tryServeFromMemory(ctx *fasthttp.RequestCtx, state *core.SystemState, key string) bool {
 	state.Mutex.RLock()
 	defer state.Mutex.RUnlock()
 
 	if e, ok := state.MemTable.Get(key); ok {
-		return sendEntry(ctx, state, e)
+		return processEntry(ctx, state, e)
 	}
 	for i := len(state.ImmutableMem) - 1; i >= 0; i-- {
 		if e, ok := state.ImmutableMem[i].Get(key); ok {
-			return sendEntry(ctx, state, e)
+			return processEntry(ctx, state, e)
 		}
 	}
 	return false
 }
 
-func tryDisk(ctx *fasthttp.RequestCtx, state *core.SystemState, key string) bool {
+func tryServeFromDisk(ctx *fasthttp.RequestCtx, state *core.SystemState, key string) bool {
 	state.Mutex.RLock()
 	tables := state.SSTables
 	bloom := state.BloomFilter
@@ -196,35 +181,34 @@ func searchLevel(ctx *fasthttp.RequestCtx, state *core.SystemState, level []stor
 			continue
 		}
 		if e, found := storage.FindInSSTable(meta, key); found {
-			return sendEntry(ctx, state, e)
+			return processEntry(ctx, state, e)
 		}
 	}
 	return false
 }
 
-func sendEntry(ctx *fasthttp.RequestCtx, state *core.SystemState, e common.Entry) bool {
+func processEntry(ctx *fasthttp.RequestCtx, state *core.SystemState, e common.Entry) bool {
 	if e.IsDeleted {
-		return false
+		ctx.Error("Not Found", fasthttp.StatusNotFound)
+		return true
 	}
+	if e.ExpiryTimestamp > 0 && time.Now().UnixNano() > e.ExpiryTimestamp {
+		ctx.Error("Not Found", fasthttp.StatusNotFound)
+		return true
+	}
+
 	if state.KeyCache != nil {
-		state.KeyCache.Insert(e.Key, e.Value)
+		state.KeyCache.InsertIntoCache(e.Key, e.Value)
 	}
 	writeJSON(ctx, e.Key, e.Value)
 	return true
 }
 
-func writeJSON(ctx *fasthttp.RequestCtx, key string, val []byte) {
-	ctx.SetContentType("application/json")
-	// Use fmt.Fprintf directly to ctx which implements Writer
-	fmt.Fprintf(ctx, `{"key":"%s","val":"%s"}`, key, val)
-}
-
-func updateMetrics() {
-	metrics.IncrementCacheHitCount()
-	metrics.IncrementReadOperationsCount()
-}
-
 func (router *HttpApiRouter) HandleBatchPutRequest(ctx *fasthttp.RequestCtx) {
+	if !isMethodAllowed(ctx, "POST") {
+		return
+	}
+
 	var req BatchPutRequestPayload
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
 		ctx.Error("Bad Request", fasthttp.StatusBadRequest)
@@ -239,27 +223,16 @@ func (router *HttpApiRouter) HandleBatchPutRequest(ctx *fasthttp.RequestCtx) {
 	ctx.SetStatusCode(fasthttp.StatusCreated)
 }
 
-func unpackBatch(req *BatchPutRequestPayload) ([]string, [][]byte, []int) {
-	count := len(req.Items)
-	keys := make([]string, count)
-	vals := make([][]byte, count)
-	ttls := make([]int, count)
-	for i, item := range req.Items {
-		keys[i] = item.Key
-		vals[i] = []byte(item.Value)
-		ttls[i] = item.TimeToLive
-	}
-	return keys, vals, ttls
-}
-
 func (router *HttpApiRouter) HandleDeleteRequest(ctx *fasthttp.RequestCtx) {
-	keyBytes := ctx.QueryArgs().Peek("key")
-	if len(keyBytes) == 0 {
+	if !isMethodAllowed(ctx, "DELETE", "POST") {
+		return
+	}
+
+	key := string(ctx.QueryArgs().Peek("key"))
+	if key == "" {
 		ctx.Error("Missing key", fasthttp.StatusBadRequest)
 		return
 	}
-	key := string(keyBytes)
-
 	if err := agents.SubmitIngestionRequest(key, nil, 0, true); err != nil {
 		ctx.Error(err.Error(), fasthttp.StatusInternalServerError)
 		return
@@ -268,6 +241,46 @@ func (router *HttpApiRouter) HandleDeleteRequest(ctx *fasthttp.RequestCtx) {
 }
 
 func (router *HttpApiRouter) HandleMetricsRequest(ctx *fasthttp.RequestCtx) {
+	if !isMethodAllowed(ctx, "GET") {
+		return
+	}
 	ctx.SetContentType("application/json")
 	json.NewEncoder(ctx).Encode(metrics.Global)
+}
+
+func isMethodAllowed(ctx *fasthttp.RequestCtx, methods ...string) bool {
+	reqMethod := string(ctx.Method())
+	for _, m := range methods {
+		if reqMethod == m {
+			return true
+		}
+	}
+	ctx.Error("Method Not Allowed", fasthttp.StatusMethodNotAllowed)
+	return false
+}
+
+func recoverPanic(ctx *fasthttp.RequestCtx) {
+	if r := recover(); r != nil {
+		logger.LogErrorEvent("PANIC: %v\n%s", r, debug.Stack())
+		ctx.Error("Internal Server Error", fasthttp.StatusInternalServerError)
+	}
+}
+
+func unpackBatch(req *BatchPutRequestPayload) ([]string, [][]byte, []int) {
+	count := len(req.Items)
+	k, v, t := make([]string, count), make([][]byte, count), make([]int, count)
+	for i, item := range req.Items {
+		k[i], v[i], t[i] = item.Key, []byte(item.Value), item.TimeToLive
+	}
+	return k, v, t
+}
+
+func writeJSON(ctx *fasthttp.RequestCtx, key string, val []byte) {
+	ctx.SetContentType("application/json")
+	fmt.Fprintf(ctx, `{"key":"%s","val":"%s"}`, key, val)
+}
+
+func updateMetrics() {
+	metrics.IncrementCacheHitCount()
+	metrics.IncrementReadOperationsCount()
 }

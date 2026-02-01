@@ -4,36 +4,68 @@ import (
 	"testing"
 )
 
-func TestLruCacheOperations(t *testing.T) {
-	// 1. Initialize
-	capacity := 2
-	cache := NewLruCache(capacity)
+func TestLruCache_InsertAndRetrieve(t *testing.T) {
+	cache := NewLruCache(2)
 
-	// 2. Insert Data
-	key1 := "key1"
-	val1 := []byte("value1")
-	cache.Insert(key1, val1)
+	cache.InsertIntoCache("key1", []byte("val1"))
+	val, found := cache.RetrieveFromCache("key1")
 
-	// 3. Retrieve Data
-	retrievedVal, found := cache.Retrieve(key1)
 	if !found {
-		t.Errorf("Failed to retrieve inserted key: %s", key1)
+		t.Error("Expected key1 to be found")
 	}
-	if string(retrievedVal) != string(val1) {
-		t.Errorf("Value mismatch. Expected %s, got %s", val1, retrievedVal)
+	if string(val) != "val1" {
+		t.Errorf("Expected val1, got %s", val)
+	}
+}
+
+func TestLruCache_UpdateExisting(t *testing.T) {
+	cache := NewLruCache(2)
+
+	cache.InsertIntoCache("key1", []byte("val1"))
+	cache.InsertIntoCache("key1", []byte("val1-updated"))
+
+	val, _ := cache.RetrieveFromCache("key1")
+	if string(val) != "val1-updated" {
+		t.Errorf("Expected updated value, got %s", val)
+	}
+}
+
+func TestLruCache_Eviction(t *testing.T) {
+	cache := NewLruCache(2)
+
+	cache.InsertIntoCache("key1", []byte("val1"))
+	cache.InsertIntoCache("key2", []byte("val2"))
+	// Access key1 to make key2 LRU
+	cache.RetrieveFromCache("key1")
+
+	// Insert key3, should evict key2
+	cache.InsertIntoCache("key3", []byte("val3"))
+
+	if _, found := cache.RetrieveFromCache("key2"); found {
+		t.Error("Expected key2 to be evicted")
+	}
+	if _, found := cache.RetrieveFromCache("key1"); !found {
+		t.Error("Expected key1 to remain")
+	}
+}
+
+func TestLruCache_Remove(t *testing.T) {
+	cache := NewLruCache(2)
+	cache.InsertIntoCache("key1", []byte("val1"))
+
+	cache.RemoveFromCache("key1")
+
+	if _, found := cache.RetrieveFromCache("key1"); found {
+		t.Error("Expected key1 to be removed")
 	}
 
-	// 4. Test Eviction
-	cache.Insert("key2", []byte("value2"))
-	cache.Insert("key3", []byte("value3")) // Should evict key1 (LRU)
+	// Remove non-existent safe check
+	cache.RemoveFromCache("key-missing")
+}
 
-	_, foundKey1 := cache.Retrieve(key1)
-	if foundKey1 {
-		t.Error("Key1 should have been evicted")
-	}
-
-	_, foundKey3 := cache.Retrieve("key3")
-	if !foundKey3 {
-		t.Error("Key3 should be present")
+func TestLruCache_RetrieveMissing(t *testing.T) {
+	cache := NewLruCache(2)
+	if _, found := cache.RetrieveFromCache("missing"); found {
+		t.Error("Expected false for missing key")
 	}
 }

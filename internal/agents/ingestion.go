@@ -55,7 +55,11 @@ func SubmitIngestionRequest(key string, val []byte, ttl int, deleted bool) error
 
 	respChan := respChanPool.Get().(chan error)
 	shardQueues[shardID] <- IngestReq{
-		Key: key, Val: val, TTL: ttl, IsDeleted: deleted, ResponseChannel: respChan,
+		Key:             key,
+		Val:             val,
+		TTL:             ttl,
+		IsDeleted:       deleted,
+		ResponseChannel: respChan,
 	}
 
 	err := <-respChan
@@ -68,29 +72,38 @@ func SubmitBatchIngestion(keys []string, vals [][]byte, ttls []int) error {
 		return nil
 	}
 
-	// 1. Group keys by shard
-	shardBatches := make(map[int][]IngestReq)
+	shardBatches := groupItemsByShard(keys, vals, ttls)
+	return dispatchAndAwaitBatches(shardBatches)
+}
+
+func groupItemsByShard(keys []string, vals [][]byte, ttls []int) map[int][]IngestReq {
+	batches := make(map[int][]IngestReq)
 	for i := range keys {
 		h := fnv.New32a()
 		h.Write([]byte(keys[i]))
 		shardID := int(h.Sum32()) % numShards
 
-		shardBatches[shardID] = append(shardBatches[shardID], IngestReq{
-			Key: keys[i], Val: vals[i], TTL: ttls[i], IsDeleted: false,
+		batches[shardID] = append(batches[shardID], IngestReq{
+			Key:       keys[i],
+			Val:       vals[i],
+			TTL:       ttls[i],
+			IsDeleted: false,
 		})
 	}
+	return batches
+}
 
-	// 2. Dispatch grouped batches
-	activeShards := len(shardBatches)
+func dispatchAndAwaitBatches(batches map[int][]IngestReq) error {
+	activeShards := len(batches)
 	responseChan := make(chan error, activeShards)
 
-	for id, items := range shardBatches {
+	for id, items := range batches {
 		shardQueues[id] <- BatchIngestReq{
-			Items: items, ResponseChannel: responseChan,
+			Items:           items,
+			ResponseChannel: responseChan,
 		}
 	}
 
-	// 3. Wait for all shards
 	var finalErr error
 	for i := 0; i < activeShards; i++ {
 		if err := <-responseChan; err != nil && finalErr == nil {
@@ -101,15 +114,15 @@ func SubmitBatchIngestion(keys []string, vals [][]byte, ttls []int) error {
 }
 
 func runShard(id int, queue chan interface{}, bb *core.SystemState) {
-	singleBuffer := make([]IngestReq, 0, 1000)
+	itemBuffer := make([]IngestReq, 0, 1000)
 
 	for payload := range queue {
 		switch req := payload.(type) {
 		case IngestReq:
-			singleBuffer = append(singleBuffer, req)
-			drainQueue(queue, &singleBuffer)
-			processBatch(id, singleBuffer, bb)
-			singleBuffer = singleBuffer[:0]
+			itemBuffer = append(itemBuffer, req)
+			drainQueue(queue, &itemBuffer)
+			processBatch(id, itemBuffer, bb)
+			itemBuffer = itemBuffer[:0]
 
 		case BatchIngestReq:
 			processBatch(id, req.Items, bb)
@@ -119,24 +132,30 @@ func runShard(id int, queue chan interface{}, bb *core.SystemState) {
 }
 
 func drainQueue(queue chan interface{}, batch *[]IngestReq) {
-	for i := 0; i < 100; i++ { // Limit drain to prevent starvation
+	for i := 0; i < 100; i++ {
 		select {
 		case payload := <-queue:
-			if req, ok := payload.(IngestReq); ok {
-				*batch = append(*batch, req)
-			} else {
-				// Put back complex batch (simplified strategy)
-				// Realistically, mixed load is rare in bench
-				go func() { queue <- payload }()
-				return
-			}
+			appendIfSingle(batch, payload, queue)
 		default:
 			return
 		}
 	}
 }
 
+func appendIfSingle(batch *[]IngestReq, payload interface{}, queue chan interface{}) {
+	switch req := payload.(type) {
+	case IngestReq:
+		*batch = append(*batch, req)
+	default:
+		go func() { queue <- payload }()
+	}
+}
+
 func processBatch(shardID int, batch []IngestReq, bb *core.SystemState) {
+	if len(batch) == 0 {
+		return
+	}
+
 	entries := prepareEntries(batch)
 
 	if err := writeWalIfEnabled(shardID, entries, bb); err != nil {
@@ -152,16 +171,24 @@ func processBatch(shardID int, batch []IngestReq, bb *core.SystemState) {
 func prepareEntries(batch []IngestReq) []common.Entry {
 	entries := make([]common.Entry, len(batch))
 	now := time.Now()
+
 	for i, req := range batch {
-		var exp int64
-		if req.TTL > 0 {
-			exp = now.Add(time.Duration(req.TTL) * time.Second).UnixNano()
-		}
-		entries[i] = common.Entry{
-			Key: req.Key, Value: req.Val, ExpiryTimestamp: exp, IsDeleted: req.IsDeleted,
-		}
+		entries[i] = createEntry(req, now)
 	}
 	return entries
+}
+
+func createEntry(req IngestReq, now time.Time) common.Entry {
+	var exp int64
+	if req.TTL > 0 {
+		exp = now.Add(time.Duration(req.TTL) * time.Second).UnixNano()
+	}
+	return common.Entry{
+		Key:             req.Key,
+		Value:           req.Val,
+		ExpiryTimestamp: exp,
+		IsDeleted:       req.IsDeleted,
+	}
 }
 
 func writeWalIfEnabled(shardID int, entries []common.Entry, bb *core.SystemState) error {
@@ -169,7 +196,7 @@ func writeWalIfEnabled(shardID int, entries []common.Entry, bb *core.SystemState
 		return nil
 	}
 	if err := bb.ActiveWal.WriteBatch(entries); err != nil {
-		logger.LogErrorEvent("WAL Error Shard %d: %v", shardID, err)
+		logger.LogErrorEvent("Shard %d WAL Error: %v", shardID, err)
 		return err
 	}
 	return nil
@@ -178,15 +205,46 @@ func writeWalIfEnabled(shardID int, entries []common.Entry, bb *core.SystemState
 func applyToMemTable(bb *core.SystemState, batch []IngestReq, entries []common.Entry) {
 	for i := 0; i < len(batch); i++ {
 		bb.MemTable.Put(batch[i].Key, batch[i].Val, entries[i].ExpiryTimestamp, batch[i].IsDeleted)
+		if bb.KeyCache != nil {
+			bb.KeyCache.RemoveFromCache(batch[i].Key)
+		}
 	}
 
 	if bb.MemTable.Size() >= bb.Configuration.MaximumMemtableSizeInBytes {
-		bb.Mutex.Lock()
-		if bb.MemTable.Size() >= bb.Configuration.MaximumMemtableSizeInBytes {
-			rotateMemTable(bb)
-		}
-		bb.Mutex.Unlock()
+		checkAndRotate(bb)
 	}
+}
+
+func checkAndRotate(bb *core.SystemState) {
+	bb.Mutex.Lock()
+	defer bb.Mutex.Unlock()
+
+	if bb.MemTable.Size() >= bb.Configuration.MaximumMemtableSizeInBytes {
+		rotateMemTable(bb)
+	}
+}
+
+func rotateMemTable(bb *core.SystemState) {
+	logger.LogInfoEvent("Rotating MemTable...")
+	bb.ImmutableMem = append(bb.ImmutableMem, bb.MemTable)
+	bb.MemTable = storage.NewMemoryTable(1024 * 1024)
+
+	if bb.Configuration.EnableDiskDurability && bb.ActiveWal != nil {
+		rotateWal(bb)
+	}
+	bb.FlushCondition.Signal()
+}
+
+func rotateWal(bb *core.SystemState) {
+	newPath := fmt.Sprintf("%s.%d", bb.Configuration.WriteAheadLogFilePath, time.Now().UnixNano())
+	nw, err := storage.NewDiskWAL(newPath, true)
+	if err != nil {
+		logger.LogErrorEvent("WAL Rotate Failed: %v", err)
+		return
+	}
+	
+	bb.FrozenWALs = append(bb.FrozenWALs, bb.ActiveWal)
+	bb.ActiveWal = nw
 }
 
 func notifySuccess(batch []IngestReq) {
@@ -202,25 +260,5 @@ func notifyErrors(batch []IngestReq, err error) {
 		if req.ResponseChannel != nil {
 			req.ResponseChannel <- err
 		}
-	}
-}
-
-func rotateMemTable(bb *core.SystemState) {
-	logger.LogInfoEvent("Rotating MemTable...")
-	bb.ImmutableMem = append(bb.ImmutableMem, bb.MemTable)
-	bb.MemTable = storage.NewMemoryTable(1024 * 1024)
-	if bb.Configuration.EnableDiskDurability && bb.ActiveWal != nil {
-		rotateWal(bb)
-	}
-	bb.FlushCondition.Signal()
-}
-
-func rotateWal(bb *core.SystemState) {
-	newPath := fmt.Sprintf("%s.%d", bb.Configuration.WriteAheadLogFilePath, time.Now().UnixNano())
-	if nw, err := storage.NewDiskWAL(newPath, true); err == nil {
-		bb.FrozenWALs = append(bb.FrozenWALs, bb.ActiveWal)
-		bb.ActiveWal = nw
-	} else {
-		logger.LogErrorEvent("WAL Rotate Failed: %v", err)
 	}
 }

@@ -24,40 +24,66 @@ func main() {
 	cfgPath := flag.String("config", "", "Config path")
 	flag.Parse()
 
-	cfg, err := config.LoadConfigurationFromFile(*cfgPath)
+	if err := Run(*cfgPath); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func Run(configPath string) error {
+	cfg, err := config.LoadConfigurationFromFile(configPath)
 	if err != nil {
-		log.Fatalf("Config Error: %v", err)
+		return err
 	}
 
 	if err := logger.InitializeLogger(cfg.LogDirectoryPath, cfg.LogSeverityLevel); err != nil {
-		log.Fatal(err)
+		return err
 	}
 
-	if cfg.MaximumCpuCount > 0 {
-		runtime.GOMAXPROCS(cfg.MaximumCpuCount)
-	}
+	configureRuntime(cfg)
 	os.MkdirAll(cfg.DataDirectoryPath, 0755)
 
 	system := core.NewSystemState(cfg)
 
-	// Recovery
-	if cfg.EnableDiskDurability {
-		wal, err := storage.NewDiskWAL(cfg.WriteAheadLogFilePath, true)
-		if err != nil {
-			logger.LogErrorEvent("WAL Error: %v", err)
-			os.Exit(1)
-		}
-		system.ActiveWal = wal
-		system.ActiveWal.Replay(func(e common.Entry) {
-			system.MemTable.Put(e.Key, e.Value, e.ExpiryTimestamp, e.IsDeleted)
-		})
+	if err := recoverWal(system); err != nil {
+		return err
 	}
 
+	startAgents(system)
+	printAdminToken(cfg)
+
+	return startHttpServer(system, cfg.ServerPort)
+}
+
+func configureRuntime(cfg config.SystemConfiguration) {
+	if cfg.MaximumCpuCount > 0 {
+		runtime.GOMAXPROCS(cfg.MaximumCpuCount)
+	}
+}
+
+func recoverWal(system *core.SystemState) error {
+	if !system.Configuration.EnableDiskDurability {
+		return nil
+	}
+
+	wal, err := storage.NewDiskWAL(system.Configuration.WriteAheadLogFilePath, true)
+	if err != nil {
+		return err
+	}
+	system.ActiveWal = wal
+
+	return system.ActiveWal.Replay(func(e common.Entry) {
+		system.MemTable.Put(e.Key, e.Value, e.ExpiryTimestamp, e.IsDeleted)
+	})
+}
+
+func startAgents(system *core.SystemState) {
 	metrics.Global = metrics.SystemMetricsRegistry{}
 	agents.InitializeIngestionSubsystem(system)
 	agents.StartFlushAgentInBackground(system)
 	agents.StartCompactionAgentInBackground(system)
+}
 
+func printAdminToken(cfg config.SystemConfiguration) {
 	if cfg.AuthenticationToken == "" {
 		key := []byte(fmt.Sprintf("%-32s", cfg.AuthenticationSecret))[:32]
 		token, _ := paseto.NewV2().Encrypt(key, paseto.JSONToken{
@@ -65,14 +91,14 @@ func main() {
 		}, "")
 		fmt.Printf("ADMIN TOKEN: %s\n", token)
 	}
+}
 
+func startHttpServer(system *core.SystemState, port int) error {
 	router := &api.HttpApiRouter{SystemState: system}
 	handler := router.GetFastHTTPHandler()
 
-	addr := fmt.Sprintf(":%d", cfg.ServerPort)
+	addr := fmt.Sprintf(":%d", port)
 	logger.LogInfoEvent("Listening on %s (fasthttp)", addr)
 
-	if err := fasthttp.ListenAndServe(addr, handler); err != nil {
-		log.Fatal(err)
-	}
+	return fasthttp.ListenAndServe(addr, handler)
 }

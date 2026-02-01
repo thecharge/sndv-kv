@@ -114,11 +114,6 @@ curl -X POST http://localhost:8080/put \
 curl "http://localhost:8080/get?key=user:1" \
   -H "Authorization: YOUR_TOKEN"
 
-# Delete
-curl -X POST "http://localhost:8080/delete?key=user:1" \
-  -H "Authorization: YOUR_TOKEN"
-```
-
 ---
 
 ## Architecture Deep Dive 🏗️
