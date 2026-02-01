@@ -25,7 +25,7 @@ func waitForFlush(bb *core.SystemState) common.KeyValueStore {
 	defer bb.Mutex.Unlock()
 
 	for len(bb.ImmutableMem) == 0 {
-		bb.FlushCondition.Wait() // FIX: Updated name
+		bb.FlushCondition.Wait() // Fixed field name
 	}
 	return bb.ImmutableMem[0]
 }

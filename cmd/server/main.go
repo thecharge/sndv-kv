@@ -4,7 +4,6 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"net/http"
 	"os"
 	"runtime"
 	"sndv-kv/internal/agents"
@@ -18,6 +17,7 @@ import (
 	"time"
 
 	"github.com/o1egl/paseto"
+	"github.com/valyala/fasthttp"
 )
 
 func main() {
@@ -36,7 +36,6 @@ func main() {
 	if cfg.MaximumCpuCount > 0 {
 		runtime.GOMAXPROCS(cfg.MaximumCpuCount)
 	}
-
 	os.MkdirAll(cfg.DataDirectoryPath, 0755)
 
 	system := core.NewSystemState(cfg)
@@ -49,8 +48,6 @@ func main() {
 			os.Exit(1)
 		}
 		system.ActiveWal = wal
-
-		fmt.Println("Recovering from WAL...")
 		system.ActiveWal.Replay(func(e common.Entry) {
 			system.MemTable.Put(e.Key, e.Value, e.ExpiryTimestamp, e.IsDeleted)
 		})
@@ -69,14 +66,13 @@ func main() {
 		fmt.Printf("ADMIN TOKEN: %s\n", token)
 	}
 
-	r := &api.HttpApiRouter{SystemState: system}
-	http.HandleFunc("/put", r.ApplyAuthenticationMiddleware(r.HandleSinglePutRequest))
-	http.HandleFunc("/get", r.ApplyAuthenticationMiddleware(r.HandleGetRequest))
-	http.HandleFunc("/batch", r.ApplyAuthenticationMiddleware(r.HandleBatchPutRequest))
-	http.HandleFunc("/delete", r.ApplyAuthenticationMiddleware(r.HandleDeleteRequest))
-	http.HandleFunc("/metrics", r.HandleMetricsRequest)
+	router := &api.HttpApiRouter{SystemState: system}
+	handler := router.GetFastHTTPHandler()
 
 	addr := fmt.Sprintf(":%d", cfg.ServerPort)
-	logger.LogInfoEvent("Listening on %s", addr)
-	log.Fatal(http.ListenAndServe(addr, nil))
+	logger.LogInfoEvent("Listening on %s (fasthttp)", addr)
+
+	if err := fasthttp.ListenAndServe(addr, handler); err != nil {
+		log.Fatal(err)
+	}
 }

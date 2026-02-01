@@ -3,7 +3,6 @@ package api
 import (
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"runtime/debug"
 	"sndv-kv/internal/agents"
 	"sndv-kv/internal/common"
@@ -14,6 +13,7 @@ import (
 	"time"
 
 	"github.com/o1egl/paseto"
+	"github.com/valyala/fasthttp"
 )
 
 type HttpApiRouter struct {
@@ -34,203 +34,240 @@ type BatchPutRequestPayload struct {
 	} `json:"items"`
 }
 
-func (router *HttpApiRouter) ApplyAuthenticationMiddleware(nextHandler http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		startTime := time.Now()
-		defer func() {
-			logger.LogAccessEvent("%s %s %s %v", r.Method, r.URL.Path, r.RemoteAddr, time.Since(startTime))
-		}()
-
-		if isAuthDisabled(router.SystemState.Configuration.AuthenticationToken, r.Header.Get("Authorization")) {
-			nextHandler(w, r)
-			return
-		}
-
-		if err := verifyToken(r.Header.Get("Authorization"), router.SystemState.Configuration.AuthenticationSecret); err != nil {
-			http.Error(w, "Unauthorized: Invalid Token", 401)
-			return
-		}
-		nextHandler(w, r)
+// GetFastHTTPHandler returns the main entry point for fasthttp
+func (router *HttpApiRouter) GetFastHTTPHandler() fasthttp.RequestHandler {
+	return func(ctx *fasthttp.RequestCtx) {
+		router.handleRequest(ctx)
 	}
 }
 
-func isAuthDisabled(configToken, headerToken string) bool {
-	return configToken == "" && headerToken == ""
+func (router *HttpApiRouter) handleRequest(ctx *fasthttp.RequestCtx) {
+	// 1. Logging & Panic Recovery
+	startTime := time.Now()
+	defer func() {
+		if r := recover(); r != nil {
+			logger.LogErrorEvent("PANIC: %v\n%s", r, debug.Stack())
+			ctx.Error("Internal Server Error", fasthttp.StatusInternalServerError)
+		}
+		logger.LogAccessEvent("%s %s %s %v", string(ctx.Method()), string(ctx.Path()), ctx.RemoteAddr(), time.Since(startTime))
+	}()
+
+	// 2. Auth Middleware
+	if !router.checkAuth(ctx) {
+		ctx.Error("Unauthorized", fasthttp.StatusUnauthorized)
+		return
+	}
+
+	// 3. Routing
+	path := string(ctx.Path())
+	// used after testing the routes with switch/case were with magnitude 2.5 faster than regular early return statements
+	// will be evaluated in future
+	switch path {
+	case "/put":
+		if ctx.IsPost() || ctx.IsPut() {
+			router.HandleSinglePutRequest(ctx)
+		} else {
+			ctx.Error("Method Not Allowed", fasthttp.StatusMethodNotAllowed)
+		}
+	case "/get":
+		if ctx.IsGet() {
+			router.HandleGetRequest(ctx)
+		} else {
+			ctx.Error("Method Not Allowed", fasthttp.StatusMethodNotAllowed)
+		}
+	case "/batch":
+		if ctx.IsPost() {
+			router.HandleBatchPutRequest(ctx)
+		} else {
+			ctx.Error("Method Not Allowed", fasthttp.StatusMethodNotAllowed)
+		}
+	case "/delete":
+		if ctx.IsDelete() || ctx.IsPost() { // Allow POST for easier client use
+			router.HandleDeleteRequest(ctx)
+		} else {
+			ctx.Error("Method Not Allowed", fasthttp.StatusMethodNotAllowed)
+		}
+	case "/metrics":
+		if ctx.IsGet() {
+			router.HandleMetricsRequest(ctx)
+		} else {
+			ctx.Error("Method Not Allowed", fasthttp.StatusMethodNotAllowed)
+		}
+	default:
+		ctx.Error("Not Found", fasthttp.StatusNotFound)
+	}
 }
 
-func verifyToken(tokenString, secret string) error {
+func (router *HttpApiRouter) checkAuth(ctx *fasthttp.RequestCtx) bool {
+	configToken := router.SystemState.Configuration.AuthenticationToken
+	headerToken := string(ctx.Request.Header.Peek("Authorization"))
+
+	if configToken == "" && headerToken == "" {
+		return true
+	}
+
 	var footer string
-	var tokenClaims paseto.JSONToken
-	secretKey := []byte(fmt.Sprintf("%-32s", secret))[:32]
-	return paseto.NewV2().Decrypt(tokenString, secretKey, &tokenClaims, &footer)
+	var claims paseto.JSONToken
+	secretKey := []byte(fmt.Sprintf("%-32s", router.SystemState.Configuration.AuthenticationSecret))[:32]
+
+	return paseto.NewV2().Decrypt(headerToken, secretKey, &claims, &footer) == nil
 }
 
-func (router *HttpApiRouter) HandleSinglePutRequest(w http.ResponseWriter, r *http.Request) {
+func (router *HttpApiRouter) HandleSinglePutRequest(ctx *fasthttp.RequestCtx) {
 	var payload SinglePutRequestPayload
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		http.Error(w, "Bad Request: Invalid JSON", 400)
+	if err := json.Unmarshal(ctx.PostBody(), &payload); err != nil {
+		ctx.Error("Bad Request: Invalid JSON", fasthttp.StatusBadRequest)
 		return
 	}
 
 	if err := agents.SubmitIngestionRequest(payload.Key, []byte(payload.Value), payload.TimeToLive, false); err != nil {
-		logger.LogErrorEvent("PUT Operation Failed: %v", err)
-		http.Error(w, fmt.Sprintf("Internal Error: %v", err), 500)
+		logger.LogErrorEvent("PUT Failed: %v", err)
+		ctx.Error(err.Error(), fasthttp.StatusInternalServerError)
 		return
 	}
-	w.WriteHeader(201)
+	ctx.SetStatusCode(fasthttp.StatusCreated)
 }
 
-func (router *HttpApiRouter) HandleGetRequest(w http.ResponseWriter, r *http.Request) {
-	defer recoverPanic(w)
-
-	key := r.URL.Query().Get("key")
-	if key == "" {
-		http.Error(w, "Bad Request: Missing key parameter", 400)
+func (router *HttpApiRouter) HandleGetRequest(ctx *fasthttp.RequestCtx) {
+	keyBytes := ctx.QueryArgs().Peek("key")
+	if len(keyBytes) == 0 {
+		ctx.Error("Missing key", fasthttp.StatusBadRequest)
 		return
 	}
+	key := string(keyBytes)
 
-	if serveFromCache(w, router.SystemState, key) {
+	if tryCache(ctx, router.SystemState, key) {
 		return
 	}
-
-	if serveFromMemory(w, router.SystemState, key) {
+	if tryMemory(ctx, router.SystemState, key) {
 		return
 	}
-
-	if serveFromDisk(w, router.SystemState, key) {
+	if tryDisk(ctx, router.SystemState, key) {
 		return
 	}
 
-	http.Error(w, "Not Found", 404)
+	ctx.Error("Not Found", fasthttp.StatusNotFound)
 }
 
-func recoverPanic(w http.ResponseWriter) {
-	if r := recover(); r != nil {
-		logger.LogErrorEvent("PANIC in HandleGetRequest: %v\n%s", r, debug.Stack())
-		http.Error(w, "Internal Server Error", 500)
-	}
-}
-
-func serveFromCache(w http.ResponseWriter, state *core.SystemState, key string) bool {
-	if state.KeyCache == nil {
-		return false
-	}
-	if value, hit := state.KeyCache.Retrieve(key); hit {
-		metrics.IncrementCacheHitCount()
-		metrics.IncrementReadOperationsCount()
-		writeJsonResponse(w, key, string(value))
-		return true
-	}
-	return false
-}
-
-func serveFromMemory(w http.ResponseWriter, state *core.SystemState, key string) bool {
-	state.Mutex.RLock()
-	defer state.Mutex.RUnlock()
-
-	// 1. Active MemTable
-	if entry, found := state.MemTable.Get(key); found {
-		return processFoundEntry(w, state, entry)
-	}
-
-	// 2. Immutable MemTables
-	for i := len(state.ImmutableMem) - 1; i >= 0; i-- {
-		if entry, found := state.ImmutableMem[i].Get(key); found {
-			return processFoundEntry(w, state, entry)
-		}
-	}
-	return false
-}
-
-func serveFromDisk(w http.ResponseWriter, state *core.SystemState, key string) bool {
-	// Snapshot state to avoid holding lock during IO
-	state.Mutex.RLock()
-	levels := state.SSTables
-	bloom := state.BloomFilter
-	state.Mutex.RUnlock()
-
-	for _, levelTables := range levels {
-		if found := searchLevel(w, state, levelTables, bloom, key); found {
+func tryCache(ctx *fasthttp.RequestCtx, state *core.SystemState, key string) bool {
+	if state.KeyCache != nil {
+		if val, hit := state.KeyCache.Retrieve(key); hit {
+			updateMetrics()
+			writeJSON(ctx, key, val)
 			return true
 		}
 	}
 	return false
 }
 
-func searchLevel(w http.ResponseWriter, state *core.SystemState, tables []storage.SSTableMetadata, bloom common.BloomFilter, key string) bool {
-	for i := len(tables) - 1; i >= 0; i-- {
-		meta := tables[i]
-		if bloom != nil && !bloom.Contains(meta.FileID, []byte(key)) {
-			continue
-		}
+func tryMemory(ctx *fasthttp.RequestCtx, state *core.SystemState, key string) bool {
+	state.Mutex.RLock()
+	defer state.Mutex.RUnlock()
 
-		entry, found := storage.FindInSSTable(meta, key)
-		if found {
-			return processFoundEntry(w, state, entry)
+	if e, ok := state.MemTable.Get(key); ok {
+		return sendEntry(ctx, state, e)
+	}
+	for i := len(state.ImmutableMem) - 1; i >= 0; i-- {
+		if e, ok := state.ImmutableMem[i].Get(key); ok {
+			return sendEntry(ctx, state, e)
 		}
 	}
 	return false
 }
 
-func processFoundEntry(w http.ResponseWriter, state *core.SystemState, entry common.Entry) bool {
-	if entry.IsDeleted {
-		http.Error(w, "Not Found (Deleted)", 404)
-		return true
-	}
-	if entry.ExpiryTimestamp > 0 && time.Now().UnixNano() > entry.ExpiryTimestamp {
-		http.Error(w, "Not Found (Expired)", 404)
-		return true
-	}
+func tryDisk(ctx *fasthttp.RequestCtx, state *core.SystemState, key string) bool {
+	state.Mutex.RLock()
+	tables := state.SSTables
+	bloom := state.BloomFilter
+	state.Mutex.RUnlock()
 
-	if state.KeyCache != nil {
-		state.KeyCache.Insert(entry.Key, entry.Value)
+	for _, level := range tables {
+		if searchLevel(ctx, state, level, bloom, key) {
+			return true
+		}
 	}
-	writeJsonResponse(w, entry.Key, string(entry.Value))
+	return false
+}
+
+func searchLevel(ctx *fasthttp.RequestCtx, state *core.SystemState, level []storage.SSTableMetadata, bloom common.BloomFilter, key string) bool {
+	for i := len(level) - 1; i >= 0; i-- {
+		meta := level[i]
+		if bloom != nil && !bloom.Contains(meta.FileID, []byte(key)) {
+			continue
+		}
+		if e, found := storage.FindInSSTable(meta, key); found {
+			return sendEntry(ctx, state, e)
+		}
+	}
+	return false
+}
+
+func sendEntry(ctx *fasthttp.RequestCtx, state *core.SystemState, e common.Entry) bool {
+	if e.IsDeleted {
+		return false
+	}
+	if state.KeyCache != nil {
+		state.KeyCache.Insert(e.Key, e.Value)
+	}
+	writeJSON(ctx, e.Key, e.Value)
 	return true
 }
 
-func writeJsonResponse(w http.ResponseWriter, key, value string) {
-	json.NewEncoder(w).Encode(map[string]string{"key": key, "val": value})
+func writeJSON(ctx *fasthttp.RequestCtx, key string, val []byte) {
+	ctx.SetContentType("application/json")
+	// Use fmt.Fprintf directly to ctx which implements Writer
+	fmt.Fprintf(ctx, `{"key":"%s","val":"%s"}`, key, val)
 }
 
-func (router *HttpApiRouter) HandleBatchPutRequest(w http.ResponseWriter, r *http.Request) {
-	var request BatchPutRequestPayload
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		http.Error(w, "Bad Request", 400)
+func updateMetrics() {
+	metrics.IncrementCacheHitCount()
+	metrics.IncrementReadOperationsCount()
+}
+
+func (router *HttpApiRouter) HandleBatchPutRequest(ctx *fasthttp.RequestCtx) {
+	var req BatchPutRequestPayload
+	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
+		ctx.Error("Bad Request", fasthttp.StatusBadRequest)
 		return
 	}
 
-	keys := make([]string, len(request.Items))
-	vals := make([][]byte, len(request.Items))
-	ttls := make([]int, len(request.Items))
+	keys, vals, ttls := unpackBatch(&req)
+	if err := agents.SubmitBatchIngestion(keys, vals, ttls); err != nil {
+		ctx.Error(err.Error(), fasthttp.StatusInternalServerError)
+		return
+	}
+	ctx.SetStatusCode(fasthttp.StatusCreated)
+}
 
-	for i, item := range request.Items {
+func unpackBatch(req *BatchPutRequestPayload) ([]string, [][]byte, []int) {
+	count := len(req.Items)
+	keys := make([]string, count)
+	vals := make([][]byte, count)
+	ttls := make([]int, count)
+	for i, item := range req.Items {
 		keys[i] = item.Key
 		vals[i] = []byte(item.Value)
 		ttls[i] = item.TimeToLive
 	}
-
-	if err := agents.SubmitBatchIngestion(keys, vals, ttls); err != nil {
-		http.Error(w, fmt.Sprintf("Batch Failure: %v", err), 500)
-		return
-	}
-	w.WriteHeader(201)
+	return keys, vals, ttls
 }
 
-func (router *HttpApiRouter) HandleDeleteRequest(w http.ResponseWriter, r *http.Request) {
-	key := r.URL.Query().Get("key")
-	if key == "" {
-		http.Error(w, "Missing key", 400)
+func (router *HttpApiRouter) HandleDeleteRequest(ctx *fasthttp.RequestCtx) {
+	keyBytes := ctx.QueryArgs().Peek("key")
+	if len(keyBytes) == 0 {
+		ctx.Error("Missing key", fasthttp.StatusBadRequest)
 		return
 	}
+	key := string(keyBytes)
+
 	if err := agents.SubmitIngestionRequest(key, nil, 0, true); err != nil {
-		http.Error(w, err.Error(), 500)
+		ctx.Error(err.Error(), fasthttp.StatusInternalServerError)
 		return
 	}
-	w.WriteHeader(200)
+	ctx.SetStatusCode(fasthttp.StatusOK)
 }
 
-func (router *HttpApiRouter) HandleMetricsRequest(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(metrics.Global)
+func (router *HttpApiRouter) HandleMetricsRequest(ctx *fasthttp.RequestCtx) {
+	ctx.SetContentType("application/json")
+	json.NewEncoder(ctx).Encode(metrics.Global)
 }

@@ -57,7 +57,6 @@ func checkAndRunCompaction(bb *core.SystemState) {
 		return
 	}
 
-	// Capture tables
 	tables := make([]storage.SSTableMetadata, l0Count)
 	copy(tables, bb.SSTables[0])
 	bb.SSTables[0] = make([]storage.SSTableMetadata, 0)

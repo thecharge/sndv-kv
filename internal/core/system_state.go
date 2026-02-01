@@ -11,20 +11,16 @@ import (
 type SystemState struct {
 	Configuration config.SystemConfiguration
 
-	// Interfaces used for abstraction
 	MemTable     common.KeyValueStore
 	ImmutableMem []common.KeyValueStore
-
-	ActiveWal  common.WriteAheadLog
-	FrozenWALs []common.WriteAheadLog
-
-	SSTables    [][]storage.SSTableMetadata
-	BloomFilter common.BloomFilter
+	ActiveWal    common.WriteAheadLog
+	FrozenWALs   []common.WriteAheadLog
+	SSTables     [][]storage.SSTableMetadata
+	BloomFilter  common.BloomFilter
 
 	Mutex          sync.RWMutex
-	FlushCondition *sync.Cond // RENAMED: Was FlushCond
-
-	KeyCache *cache.LruCache
+	FlushCondition *sync.Cond
+	KeyCache       *cache.LruCache
 }
 
 func NewSystemState(cfg config.SystemConfiguration) *SystemState {

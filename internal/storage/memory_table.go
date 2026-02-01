@@ -1,60 +1,85 @@
 package storage
 
 import (
+	"hash/fnv"
 	"sndv-kv/internal/common"
 	"sync"
+	"sync/atomic"
 )
 
-type MemoryTable struct {
-	data        map[string]common.Entry
-	mutex       sync.RWMutex
-	sizeInBytes int64
+const memTableShards = 32
+
+type memoryShard struct {
+	data  map[string]common.Entry
+	mutex sync.RWMutex
 }
 
-func NewMemoryTable(capacity int) *MemoryTable {
-	return &MemoryTable{
-		data: make(map[string]common.Entry, capacity),
-	}
+type ShardedMemoryTable struct {
+	shards    [memTableShards]*memoryShard
+	totalSize int64
 }
 
-func (mt *MemoryTable) Put(key string, value []byte, expiry int64, isDeleted bool) {
-	mt.mutex.Lock()
-	defer mt.mutex.Unlock()
-
-	newSize := int64(len(key) + len(value) + 16)
-	if old, exists := mt.data[key]; exists {
-		oldSize := int64(len(old.Key) + len(old.Value) + 16)
-		mt.sizeInBytes -= oldSize
+func NewMemoryTable(capacity int) *ShardedMemoryTable {
+	t := &ShardedMemoryTable{}
+	shardCap := capacity / memTableShards
+	if shardCap < 1 {
+		shardCap = 1
 	}
 
-	mt.data[key] = common.Entry{
+	for i := 0; i < memTableShards; i++ {
+		t.shards[i] = &memoryShard{
+			data: make(map[string]common.Entry, shardCap),
+		}
+	}
+	return t
+}
+
+func (mt *ShardedMemoryTable) getShard(key string) *memoryShard {
+	h := fnv.New32a()
+	h.Write([]byte(key))
+	return mt.shards[h.Sum32()%memTableShards]
+}
+
+func (mt *ShardedMemoryTable) Put(key string, value []byte, expiry int64, isDeleted bool) {
+	shard := mt.getShard(key)
+	entrySize := int64(len(key) + len(value) + 16)
+
+	shard.mutex.Lock()
+	if old, exists := shard.data[key]; exists {
+		atomic.AddInt64(&mt.totalSize, -(int64(len(old.Key) + len(old.Value) + 16)))
+	}
+	shard.data[key] = common.Entry{
 		Key:             key,
 		Value:           value,
 		ExpiryTimestamp: expiry,
 		IsDeleted:       isDeleted,
 	}
-	mt.sizeInBytes += newSize
+	shard.mutex.Unlock()
+
+	atomic.AddInt64(&mt.totalSize, entrySize)
 }
 
-func (mt *MemoryTable) Get(key string) (common.Entry, bool) {
-	mt.mutex.RLock()
-	defer mt.mutex.RUnlock()
-	e, ok := mt.data[key]
-	return e, ok
+func (mt *ShardedMemoryTable) Get(key string) (common.Entry, bool) {
+	shard := mt.getShard(key)
+	shard.mutex.RLock()
+	defer shard.mutex.RUnlock()
+	val, ok := shard.data[key]
+	return val, ok
 }
 
-func (mt *MemoryTable) GetAll() []common.Entry {
-	mt.mutex.RLock()
-	defer mt.mutex.RUnlock()
-	res := make([]common.Entry, 0, len(mt.data))
-	for _, e := range mt.data {
-		res = append(res, e)
+func (mt *ShardedMemoryTable) GetAll() []common.Entry {
+	var entries []common.Entry
+	for i := 0; i < memTableShards; i++ {
+		shard := mt.shards[i]
+		shard.mutex.RLock()
+		for _, e := range shard.data {
+			entries = append(entries, e)
+		}
+		shard.mutex.RUnlock()
 	}
-	return res
+	return entries
 }
 
-func (mt *MemoryTable) Size() int64 {
-	mt.mutex.RLock()
-	defer mt.mutex.RUnlock()
-	return mt.sizeInBytes
+func (mt *ShardedMemoryTable) Size() int64 {
+	return atomic.LoadInt64(&mt.totalSize)
 }

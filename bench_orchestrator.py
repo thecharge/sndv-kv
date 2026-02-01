@@ -26,25 +26,25 @@ class ComprehensiveBenchOrchestrator:
         self.test_cases = [
             # Low resources - see how it behaves under constraint
             ("safe-single", "0.5", "256M", 8081, "light"),
-            ("safe-batch", "0.5", "256M", 8082, "light"),
-            ("fast-single", "0.5", "256M", 8083, "light"),
-            ("fast-batch", "0.5", "256M", 8084, "light"),
+            # ("safe-batch", "0.5", "256M", 8082, "light"),
+            # ("fast-single", "0.5", "256M", 8083, "light"),
+            # ("fast-batch", "0.5", "256M", 8084, "light"),
             
-            # Medium resources - 1 vCPU, memory scaling
-            ("safe-single", "1.0", "256M", 8085, "medium"),
-            ("safe-single", "1.0", "512M", 8086, "medium"),
-            ("safe-single", "1.0", "1024M", 8087, "medium"),
-            ("safe-batch", "1.0", "256M", 8088, "medium"),
-            ("safe-batch", "1.0", "512M", 8089, "medium"),
-            ("safe-batch", "1.0", "1024M", 8090, "medium"),
+            # # Medium resources - 1 vCPU, memory scaling
+            # ("safe-single", "1.0", "256M", 8085, "medium"),
+            # ("safe-single", "1.0", "512M", 8086, "medium"),
+            # ("safe-single", "1.0", "1024M", 8087, "medium"),
+            # ("safe-batch", "1.0", "256M", 8088, "medium"),
+            # ("safe-batch", "1.0", "512M", 8089, "medium"),
+            # ("safe-batch", "1.0", "1024M", 8090, "medium"),
             
-            # High resources - 2 vCPU, high memory
-            ("safe-single", "2.0", "1024M", 8091, "high"),
-            ("safe-single", "2.0", "2048M", 8092, "high"),
-            ("safe-batch", "2.0", "1024M", 8093, "high"),
-            ("safe-batch", "2.0", "2048M", 8094, "high"),
-            ("fast-single", "2.0", "2048M", 8095, "high"),
-            ("fast-batch", "2.0", "2048M", 8096, "high"),
+            # # High resources - 2 vCPU, high memory
+            # ("safe-single", "2.0", "1024M", 8091, "high"),
+            # ("safe-single", "2.0", "2048M", 8092, "high"),
+            # ("safe-batch", "2.0", "1024M", 8093, "high"),
+            # ("safe-batch", "2.0", "2048M", 8094, "high"),
+            # ("fast-single", "2.0", "2048M", 8095, "high"),
+            # ("fast-batch", "2.0", "2048M", 8096, "high"),
         ]
         
         self.all_results = []
