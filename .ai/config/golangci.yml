@@ -1,0 +1,66 @@
+run:
+  timeout: 5m
+  tests: true
+  skip-dirs:
+    - vendor
+    - third_party
+  skip-files:
+    - ".*_test.go"
+    - ".*_gen.go"
+
+linters:
+  enable:
+    - gofmt
+    - govet
+    - errcheck
+    - staticcheck
+    - unused
+    - gosimple
+    - structcheck
+    - varcheck
+    - ineffassign
+    - deadcode
+    - typecheck
+    - gocyclo
+    - gocognit
+    - goconst
+    - misspell
+    - unparam
+    - unconvert
+    - dupl
+    - nakedret
+    - prealloc
+    - exportloopref
+    - nilerr
+    - noctx
+    - rowserrcheck
+    - sqlclosecheck
+    - wastedassign
+
+linters-settings:
+  gocyclo:
+    min-complexity: 10
+  
+  gocognit:
+    min-complexity: 15
+  
+  dupl:
+    threshold: 100
+  
+  goconst:
+    min-len: 3
+    min-occurrences: 3
+  
+  misspell:
+    locale: US
+
+issues:
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - gocyclo
+        - gocognit
+        - dupl
+  
+  max-issues-per-linter: 0
+  max-same-issues: 0

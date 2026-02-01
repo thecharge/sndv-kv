@@ -1,0 +1,37 @@
+# Technical terms and Go-specific words
+golang
+struct
+structs
+bool
+uint
+int
+func
+goroutine
+goroutines
+mutex
+chan
+Errorf
+Printf
+Sprintf
+idempotency
+idempotent
+nanoseconds
+milliseconds
+kubernetes
+etcd
+unmarshal
+unmarshaling
+
+# Domain-specific terms
+deduplication
+dedup
+checksum
+checksums
+merkle
+paxos
+raft
+gossip
+
+# Project-specific terms
+todo
+todos

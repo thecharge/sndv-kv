@@ -429,7 +429,7 @@ If you publish research using this, please cite.
 - **LevelDB/RocksDB** - Reference implementation inspiration
 - **BadgerDB** - Go LSM-tree design patterns
 - **Blackboard Systems** - AI coordination patterns from the 1980s
-- **Claude/GPT** - AI pair programming for faster iteration
+- **Claude/Gemini/GPT** - AI pair programming for faster iteration
 - **Everyone who reviewed this** - Brutal feedback makes better software
 
 ---
