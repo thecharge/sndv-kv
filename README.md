@@ -228,19 +228,7 @@ For now
 2. A comperhensive multi stage build and test `python bench_orchestrator.py` is in place so you can see the full suite, tests and benches done
 When I habve time I will add more detailed explanations of the suites and their metrics.
 
-**Interpretation:**
-
-- Direct: ~465K ops/sec (Go overhead only)
-- HTTP: ~7K ops/sec (realistic workload)
-- Gap: HTTP/JSON/Auth overhead (70x)
-
-**Comparison to production systems:**
-
-- RocksDB: ~100K writes/sec (C++, highly optimized)
-- BadgerDB: ~150K writes/sec (Go, 5 years of tuning)
-- Redis: ~100K ops/sec (C, in-memory)
-
-**We're 15-20x slower than production systems.** That's expected for:
+**We're slower than production systems.** That's expected for:
 
 - Research codebase vs production
 - Go vs C/C++
