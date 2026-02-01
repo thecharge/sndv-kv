@@ -53,3 +53,6 @@ test_regressive/
 **/*regress_**/
 **/*test_**/
 benchmark_audit.log
+
+
+!benchmark_reports/*
