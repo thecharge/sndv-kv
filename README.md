@@ -55,10 +55,7 @@ Each agent observes state and acts independently. No callbacks. No thread pools.
 
 ### Performance
 
-- **HTTP API:** ~7K writes/sec, ~8K reads/sec
-- **Direct (no HTTP):** ~465K writes/sec
-- **Crash-safe:** Yes (WAL with fsync)
-- **Tested scale:** 1M+ keys, sustained load
+- to be added on a later basis
 
 ### Features
 
@@ -232,19 +229,19 @@ Here is the last quick benchmark I ran:
 evidence for the last quick bench in the results.json in th eroot of the repository (Have that it may vary from PC to PC the bench orchestrator uses much more evidence and integration test data - but is docker and python bound as well as it will require much more time to run in future a seprate folder with version to version benchmarks and configurations will be in place - but for now I do not have time to polish and will wait until there is a time for production or someone decides to implement that in MR)
 
 ```bash
-python .\quick_bench.py
+ python .\quick_bench.py
 Building...
 Starting server...
 
 Single ops (200)...
-  175 TPS
+  710 TPS
 
 Batch ops (1000)...
-  13,451 TPS
+  43,084 TPS
 
 ========================================
-Single:        175 TPS
-Batch:      13,451 TPS
+Single:        710 TPS
+Batch:      43,084 TPS
 ========================================
 ```
 

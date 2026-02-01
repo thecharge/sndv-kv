@@ -38,6 +38,7 @@ go.work.sum
 data/
 **/data_*/
 **/*_data/
+**/*-data/
 **/bench_data**/
 **/bench**/
 
@@ -45,6 +46,7 @@ data/
 logs/
 **/logs_*/
 **/*_logs/
+**/*-logs/
 
 
 # tests

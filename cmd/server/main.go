@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"sndv-kv/internal/agents"
 	"sndv-kv/internal/api"
+	"sndv-kv/internal/common"
 	"sndv-kv/internal/config"
 	"sndv-kv/internal/core"
 	"sndv-kv/internal/logger"
@@ -20,63 +21,62 @@ import (
 )
 
 func main() {
-	cfgPath := flag.String("config", "", "Config file path")
+	cfgPath := flag.String("config", "", "Config path")
 	flag.Parse()
 
-	cfg, err := config.Load(*cfgPath)
+	cfg, err := config.LoadConfigurationFromFile(*cfgPath)
 	if err != nil {
+		log.Fatalf("Config Error: %v", err)
+	}
+
+	if err := logger.InitializeLogger(cfg.LogDirectoryPath, cfg.LogSeverityLevel); err != nil {
 		log.Fatal(err)
 	}
 
-	// Initialize Logger
-	if err := logger.Init(cfg.LogDir, cfg.LogLevel); err != nil {
-		log.Fatalf("Log Init Failed: %v", err)
+	if cfg.MaximumCpuCount > 0 {
+		runtime.GOMAXPROCS(cfg.MaximumCpuCount)
 	}
 
-	// Runtime Config
-	if cfg.MaxCPU > 0 {
-		runtime.GOMAXPROCS(cfg.MaxCPU)
-	}
+	os.MkdirAll(cfg.DataDirectoryPath, 0755)
 
-	os.MkdirAll(cfg.DataDir, 0755)
-	bb := core.NewBlackboard(cfg)
+	system := core.NewSystemState(cfg)
 
 	// Recovery
-	if cfg.Durability {
-		bb.ActiveWal, err = storage.OpenWAL(cfg.WalPath, cfg.Durability)
+	if cfg.EnableDiskDurability {
+		wal, err := storage.NewDiskWAL(cfg.WriteAheadLogFilePath, true)
 		if err != nil {
-			logger.Error("WAL Open Failed: %v", err)
+			logger.LogErrorEvent("WAL Error: %v", err)
 			os.Exit(1)
 		}
+		system.ActiveWal = wal
 
-		fmt.Println("Restoring WAL...")
-		bb.ActiveWal.Replay(func(k string, v []byte, exp int64, del bool) {
-			bb.MemTable.Put(k, v, exp, del)
+		fmt.Println("Recovering from WAL...")
+		system.ActiveWal.Replay(func(e common.Entry) {
+			system.MemTable.Put(e.Key, e.Value, e.ExpiryTimestamp, e.IsDeleted)
 		})
 	}
 
-	// Start Subsystems
-	metrics.StartSystemMonitor(cfg.DataDir, cfg.WalPath)
-	agents.InitIngest(bb) // Sharded Init
-	agents.StartFlushAgent(bb)
-	agents.StartCompactionAgent(bb)
+	metrics.Global = metrics.SystemMetricsRegistry{}
+	agents.InitializeIngestionSubsystem(system)
+	agents.StartFlushAgentInBackground(system)
+	agents.StartCompactionAgentInBackground(system)
 
-	// Auth
-	if cfg.AuthToken == "" {
-		key := []byte(fmt.Sprintf("%-32s", cfg.AuthSecret))[:32]
+	if cfg.AuthenticationToken == "" {
+		key := []byte(fmt.Sprintf("%-32s", cfg.AuthenticationSecret))[:32]
 		token, _ := paseto.NewV2().Encrypt(key, paseto.JSONToken{
 			Subject: "admin", Expiration: time.Now().Add(24 * time.Hour),
 		}, "")
 		fmt.Printf("ADMIN TOKEN: %s\n", token)
 	}
 
-	// Router
-	r := &api.Router{BB: bb}
-	http.HandleFunc("/batch", r.MiddlewareAuth(r.HandleBatchPut))
-	http.HandleFunc("/put", r.MiddlewareAuth(r.HandlePut))
-	http.HandleFunc("/get", r.MiddlewareAuth(r.HandleGet))
+	r := &api.HttpApiRouter{SystemState: system}
+	http.HandleFunc("/put", r.ApplyAuthenticationMiddleware(r.HandleSinglePutRequest))
+	http.HandleFunc("/get", r.ApplyAuthenticationMiddleware(r.HandleGetRequest))
+	http.HandleFunc("/batch", r.ApplyAuthenticationMiddleware(r.HandleBatchPutRequest))
+	http.HandleFunc("/delete", r.ApplyAuthenticationMiddleware(r.HandleDeleteRequest))
+	http.HandleFunc("/metrics", r.HandleMetricsRequest)
 
-	addr := fmt.Sprintf(":%d", cfg.Port)
-	logger.Info("Server listening on %s", addr)
+	addr := fmt.Sprintf(":%d", cfg.ServerPort)
+	logger.LogInfoEvent("Listening on %s", addr)
 	log.Fatal(http.ListenAndServe(addr, nil))
 }

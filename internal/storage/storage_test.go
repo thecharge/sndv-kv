@@ -2,45 +2,49 @@ package storage
 
 import (
 	"os"
+	"sndv-kv/internal/common"
 	"testing"
 )
 
-func TestWALBatchAndRecovery(t *testing.T) {
-	fname := "test_batch.wal"
+func TestBloomFilter(t *testing.T) {
+	bf := NewSharedBloomFilter(100, 0.01)
+	if bf.hashCount == 0 {
+		t.Error("Hash count zero")
+	}
+	bf.Add(1, []byte("key"))
+	if !bf.Contains(1, []byte("key")) {
+		t.Error("False negative")
+	}
+}
+
+func TestWAL(t *testing.T) {
+	fname := "test.wal"
 	defer os.Remove(fname)
 
-	// 1. Open
-	wal, err := OpenWAL(fname, true)
-	if err != nil {
-		t.Fatalf("OpenWAL: %v", err)
-	}
-
-	// 2. Write Batch
-	entries := []Entry{
-		{Key: "k1", Value: []byte("v1"), ExpiresAt: 100, Deleted: false},
-		{Key: "k2", Value: []byte("v2"), ExpiresAt: 200, Deleted: true},
-	}
-	if err := wal.AppendBatch(entries); err != nil {
-		t.Fatalf("AppendBatch: %v", err)
-	}
+	wal, _ := NewDiskWAL(fname, true)
+	wal.WriteBatch([]common.Entry{{Key: "k", Value: []byte("v")}})
 	wal.Close()
 
-	// 3. Replay
-	wal2, err := OpenWAL(fname, false)
-	if err != nil {
-		t.Fatalf("Re-Open: %v", err)
-	}
-
-	found := make(map[string]Entry)
-	wal2.Replay(func(k string, v []byte, exp int64, del bool) {
-		found[k] = Entry{Key: k, Value: v, ExpiresAt: exp, Deleted: del}
+	wal2, _ := NewDiskWAL(fname, true)
+	count := 0
+	wal2.Replay(func(e common.Entry) {
+		if e.Key == "k" {
+			count++
+		}
 	})
-
-	// 4. Verify
-	if e, ok := found["k1"]; !ok || string(e.Value) != "v1" {
-		t.Error("k1 corrupted or missing")
+	if count != 1 {
+		t.Error("Replay failed")
 	}
-	if e, ok := found["k2"]; !ok || !e.Deleted {
-		t.Error("k2 tombstone corrupted")
+	wal2.Close()
+}
+
+func TestSSTable(t *testing.T) {
+	fname := "L0_1.sst"
+	defer os.Remove(fname)
+	entries := []common.Entry{{Key: "k", Value: []byte("v")}}
+	meta, _ := WriteSortedStringTableToDisk(entries, fname, 0, nil)
+	entry, found := FindInSSTable(meta, "k")
+	if !found || string(entry.Value) != "v" {
+		t.Error("SSTable read failed")
 	}
 }

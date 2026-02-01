@@ -4,10 +4,7 @@ go 1.24.0
 
 toolchain go1.24.12
 
-require (
-	github.com/cespare/xxhash/v2 v2.3.0
-	github.com/o1egl/paseto v1.0.0
-)
+require github.com/o1egl/paseto v1.0.0
 
 require (
 	github.com/aead/chacha20 v0.0.0-20180709150244-8b13a72661da // indirect
