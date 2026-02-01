@@ -55,4 +55,4 @@ test_regressive/
 benchmark_audit.log
 
 
-!benchmark_reports/*
+!./benchmark_reports/*
