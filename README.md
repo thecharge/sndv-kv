@@ -221,26 +221,12 @@ This project is exploring:
 
 ## Benchmarks 📈
 
-### Honest Numbers
+Benchmarks can be viewed separately in the folder structure.
+For now
 
-**Test setup:** Windows 11, i7-11800H, 16GB RAM, NVMe SSD
-
-```bash
-# Direct engine (no HTTP overhead)
-> go test -bench=BenchmarkEngineWriteParallel
-BenchmarkEngineWriteParallel-16    465,246 ops/sec
-
-# Real HTTP server (Python client, 100 concurrent)
-> python scripts/benchmark.py
-
-SAFE Mode (durability=true, fsync enabled):
-  Writes: 6,304 TPS
-  Reads:  8,274 TPS
-  
-FAST Mode (durability=false, in-memory):
-  Writes: 6,720 TPS  
-  Reads:  8,481 TPS
-```
+1. Quick benchmark `python3 quick_bench.py`  script is in place in order for you to see and get the feelign of the engine
+2. A comperhensive multi stage build and test `python bench_orchestrator.py` is in place so you can see the full suite, tests and benches done
+When I habve time I will add more detailed explanations of the suites and their metrics.
 
 **Interpretation:**
 
