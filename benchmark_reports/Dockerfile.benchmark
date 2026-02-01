@@ -1,0 +1,103 @@
+# ============================================================================
+# Stage 1: Unit Tests + Coverage
+# ============================================================================
+FROM golang:1.23-alpine AS unit-tests
+
+RUN apk add --no-cache git
+
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+
+ENV CGO_ENABLED=0
+
+# Run tests with coverage
+RUN mkdir -p /artifacts/unit-tests && \
+    go test ./... -v \
+        -coverprofile=/artifacts/unit-tests/coverage.out \
+        -covermode=atomic \
+        -json > /artifacts/unit-tests/results.json 2>&1 || \
+    (cat /artifacts/unit-tests/results.json && exit 1)
+
+# Generate coverage reports
+RUN go tool cover -func=/artifacts/unit-tests/coverage.out \
+        > /artifacts/unit-tests/coverage.txt && \
+    go tool cover -html=/artifacts/unit-tests/coverage.out \
+        -o /artifacts/unit-tests/coverage.html
+
+# ============================================================================
+# Stage 2: CPU & Memory Benchmarks
+# ============================================================================
+FROM golang:1.23-alpine AS benchmarks
+
+RUN apk add --no-cache git
+
+WORKDIR /app
+COPY --from=unit-tests /app /app
+
+ENV CGO_ENABLED=0
+
+# Run benchmarks with profiling
+RUN mkdir -p /artifacts/benchmarks && \
+    go test -bench=. -benchmem -benchtime=5s \
+        -cpuprofile=/artifacts/benchmarks/cpu.prof \
+        -memprofile=/artifacts/benchmarks/mem.prof \
+        ./internal/ > /artifacts/benchmarks/go-bench.txt 2>&1 || true
+
+# Generate profile reports
+RUN go tool pprof -text -nodecount=20 \
+        /artifacts/benchmarks/cpu.prof \
+        > /artifacts/benchmarks/cpu-top20.txt 2>/dev/null || true && \
+    go tool pprof -text -nodecount=20 -alloc_space \
+        /artifacts/benchmarks/mem.prof \
+        > /artifacts/benchmarks/mem-top20.txt 2>/dev/null || true
+
+# ============================================================================
+# Stage 3: Build with Metrics
+# ============================================================================
+FROM golang:1.23-alpine AS builder
+
+RUN apk add --no-cache git
+
+WORKDIR /app
+COPY --from=unit-tests /app /app
+
+ENV CGO_ENABLED=0
+
+# Build with timing
+RUN mkdir -p /artifacts/build && \
+    date +%s > /artifacts/build/start_time.txt && \
+    go build -ldflags="-s -w" -o /artifacts/build/sndv-kv cmd/server/main.go && \
+    date +%s > /artifacts/build/end_time.txt && \
+    ls -lh /artifacts/build/sndv-kv > /artifacts/build/binary_size.txt
+
+# ============================================================================
+# Stage 4: Integration Tests Runtime
+# ============================================================================
+FROM alpine:latest AS runtime
+
+RUN apk add --no-cache ca-certificates python3 py3-pip curl bash
+
+# Install Python deps
+RUN pip3 install --break-system-packages requests
+
+WORKDIR /app
+
+# Copy binary
+COPY --from=builder /artifacts/build/sndv-kv /app/sndv-kv
+
+# Copy artifacts from all stages
+COPY --from=unit-tests /artifacts/unit-tests /artifacts/unit-tests
+COPY --from=benchmarks /artifacts/benchmarks /artifacts/benchmarks
+COPY --from=builder /artifacts/build /artifacts/build
+
+# Copy scripts
+COPY scripts/docker_integration.py /app/integration.py
+
+# Health check
+HEALTHCHECK --interval=5s --timeout=3s --retries=3 \
+    CMD curl -f http://localhost:8080/health || exit 1
+
+ENTRYPOINT ["/app/sndv-kv"]
+CMD ["-config", "/config/config.json"]
