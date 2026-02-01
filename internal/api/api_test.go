@@ -19,28 +19,28 @@ func setupTestServer(t *testing.T) (*fasthttp.Client, func()) {
 	dir := "./test_api_" + t.Name()
 	os.RemoveAll(dir)
 	os.MkdirAll(dir, 0755)
-	
+
 	// Quiet logger
 	logger.InitializeLogger(dir, "ERROR")
 
 	cfg := config.SystemConfiguration{
-		DataDirectoryPath:          dir,
-		WriteAheadLogFilePath:      dir + "/wal.log",
-		MaximumMemtableSizeInBytes: 1024 * 1024,
-		EnableDiskDurability:       false,
-		KeyCacheCapacityCount:      1000,
+		DataDirectoryPath:            dir,
+		WriteAheadLogFilePath:        dir + "/wal.log",
+		MaximumMemtableSizeInBytes:   1024 * 1024,
+		EnableDiskDurability:         false,
+		KeyCacheCapacityCount:        1000,
 		BloomFilterFalsePositiveRate: 0.01,
 	}
 
 	state := core.NewSystemState(cfg)
 	agents.InitializeIngestionSubsystem(state)
-	
+
 	router := &HttpApiRouter{SystemState: state}
 	handler := router.GetFastHTTPHandler()
 
 	// In-memory listener for testing without ports
 	ln := fasthttputil.NewInmemoryListener()
-	
+
 	serverErr := make(chan error, 1)
 	go func() {
 		serverErr <- fasthttp.Serve(ln, handler)
@@ -126,7 +126,7 @@ func TestCriticalPath_Batch(t *testing.T) {
 	req.Reset()
 	resp.Reset()
 	req.SetRequestURI("http://test/get?key=b2")
-	
+
 	if err := client.Do(req, resp); err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +162,7 @@ func TestCriticalPath_Delete(t *testing.T) {
 	req.Reset()
 	resp.Reset()
 	req.SetRequestURI("http://test/get?key=del_key")
-	
+
 	client.Do(req, resp)
 	if resp.StatusCode() != fasthttp.StatusNotFound {
 		t.Errorf("Expected 404, got %d", resp.StatusCode())
