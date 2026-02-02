@@ -250,7 +250,7 @@ func applyToMemTable(bb *core.SystemState, batch []IngestReq, entries []common.E
 	}
 
 	if bb.MemTable.Size() >= bb.Configuration.MaximumMemtableSizeInBytes {
-		checkAndRotate(bb)
+		bb.FlushCondition.Signal()  // Let flush agent handle it
 	}
 }
 
