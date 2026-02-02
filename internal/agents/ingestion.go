@@ -41,6 +41,14 @@ var (
 	respChanPool = sync.Pool{
 		New: func() interface{} { return make(chan error, 1) },
 	}
+	// MEMORY OPTIMIZATION: Reuse batches to kill 15% allocs
+	entrySlicePool = sync.Pool{
+		New: func() interface{} {
+			// Pre-allocate capacity for typical batch size
+			s := make([]common.Entry, 0, 100)
+			return &s
+		},
+	}
 )
 
 func InitializeIngestionSubsystem(bb *core.SystemState) {
@@ -135,6 +143,7 @@ func dispatchAndAwaitBatches(batches map[int][]IngestReq) error {
 }
 
 func runShard(id int, chans ShardChannels, bb *core.SystemState) {
+	// Pre-allocated buffer on stack/heap per shard
 	itemBuffer := make([]IngestReq, 0, 1000)
 
 	for {
@@ -153,13 +162,15 @@ func runShard(id int, chans ShardChannels, bb *core.SystemState) {
 }
 
 func drainSingleQueue(queue chan *IngestReq, batch *[]IngestReq) {
-	count := len(queue)
-	if count > 100 {
-		count = 100
+	// Optimization: Batch-read available items without select-default
+	// We trust len() because we are the single consumer.
+	limit := 100
+	available := len(queue)
+	if available < limit {
+		limit = available
 	}
-	// Deterministic read based on length snapshot.
-	// Safe because we are the only consumer.
-	for i := 0; i < count; i++ {
+
+	for i := 0; i < limit; i++ {
 		req := <-queue
 		*batch = append(*batch, *req)
 	}
@@ -170,26 +181,34 @@ func processBatch(shardID int, batch []IngestReq, bb *core.SystemState) {
 		return
 	}
 
-	entries := prepareEntries(batch)
+	// MEMORY FIX: Reuse pooled slice
+	entriesPtr := entrySlicePool.Get().(*[]common.Entry)
+	// Reset length, keep capacity
+	entries := (*entriesPtr)[:0]
+
+	entries = prepareEntries(batch, entries)
 
 	if err := writeWalIfEnabled(shardID, entries, bb); err != nil {
 		notifyErrors(batch, err)
+		entrySlicePool.Put(entriesPtr)
 		return
 	}
 
 	applyToMemTable(bb, batch, entries)
+
+	// Return to pool after use
+	entrySlicePool.Put(entriesPtr)
+
 	metrics.Global.WriteOps += int64(len(batch))
 	notifySuccess(batch)
 }
 
-func prepareEntries(batch []IngestReq) []common.Entry {
-	entries := make([]common.Entry, len(batch))
+func prepareEntries(batch []IngestReq, out []common.Entry) []common.Entry {
 	now := time.Now()
-
-	for i, req := range batch {
-		entries[i] = createEntry(req, now)
+	for _, req := range batch {
+		out = append(out, createEntry(req, now))
 	}
-	return entries
+	return out
 }
 
 func createEntry(req IngestReq, now time.Time) common.Entry {
@@ -197,9 +216,15 @@ func createEntry(req IngestReq, now time.Time) common.Entry {
 	if req.TTL > 0 {
 		exp = now.Add(time.Duration(req.TTL) * time.Second).UnixNano()
 	}
+
+	// SAFE COPY: Copy bytes to prevent corruption from fasthttp buffer reuse
+	// This allocation is necessary for correctness.
+	valCopy := make([]byte, len(req.Val))
+	copy(valCopy, req.Val)
+
 	return common.Entry{
 		Key:             req.Key,
-		Value:           req.Val,
+		Value:           valCopy,
 		ExpiryTimestamp: exp,
 		IsDeleted:       req.IsDeleted,
 	}

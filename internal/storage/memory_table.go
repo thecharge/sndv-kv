@@ -68,16 +68,22 @@ func (mt *ShardedMemoryTable) Get(key string) (common.Entry, bool) {
 }
 
 func (mt *ShardedMemoryTable) GetAll() []common.Entry {
+	// Fallback that allocates
 	var entries []common.Entry
+	return mt.DumpToSlice(entries)
+}
+
+// DumpToSlice appends all entries to the provided slice, avoiding allocation
+func (mt *ShardedMemoryTable) DumpToSlice(out []common.Entry) []common.Entry {
 	for i := 0; i < memTableShards; i++ {
 		shard := mt.shards[i]
 		shard.mutex.RLock()
 		for _, e := range shard.data {
-			entries = append(entries, e)
+			out = append(out, e)
 		}
 		shard.mutex.RUnlock()
 	}
-	return entries
+	return out
 }
 
 func (mt *ShardedMemoryTable) Size() int64 {

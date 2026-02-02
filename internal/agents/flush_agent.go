@@ -6,8 +6,18 @@ import (
 	"sndv-kv/internal/core"
 	"sndv-kv/internal/logger"
 	"sndv-kv/internal/storage"
+	"sort"
+	"sync"
 	"time"
 )
+
+var flushBufferPool = sync.Pool{
+	New: func() interface{} {
+		// Pre-allocate 10k items for flush buffer
+		s := make([]common.Entry, 0, 10000)
+		return &s
+	},
+}
 
 func StartFlushAgentInBackground(bb *core.SystemState) {
 	go func() {
@@ -25,16 +35,36 @@ func waitForFlush(bb *core.SystemState) common.KeyValueStore {
 	defer bb.Mutex.Unlock()
 
 	for len(bb.ImmutableMem) == 0 {
-		bb.FlushCondition.Wait() // Fixed field name
+		bb.FlushCondition.Wait()
 	}
 	return bb.ImmutableMem[0]
 }
 
 func processFlush(bb *core.SystemState, table common.KeyValueStore) {
 	filename := fmt.Sprintf("%s/L0_%d.sst", bb.Configuration.DataDirectoryPath, time.Now().UnixNano())
-	entries := table.GetAll()
+
+	// MEMORY OPTIMIZATION: Get buffer from pool
+	bufPtr := flushBufferPool.Get().(*[]common.Entry)
+	entries := (*bufPtr)[:0] // Reset length
+
+	// Dump MemTable into buffer
+	if mem, ok := table.(*storage.ShardedMemoryTable); ok {
+		// Optimized path avoiding intermediate allocs
+		entries = mem.DumpToSlice(entries)
+	} else {
+		// Fallback for tests
+		entries = table.GetAll()
+	}
+
+	// SSTables MUST be sorted
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Key < entries[j].Key
+	})
 
 	meta, err := storage.WriteSortedStringTableToDisk(entries, filename, 0, bb.BloomFilter)
+
+	// Return buffer to pool
+	flushBufferPool.Put(bufPtr)
 
 	commitFlush(bb, meta, err, filename, len(entries))
 }

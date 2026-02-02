@@ -123,7 +123,6 @@ func TestIngest_Negative_RotationWalFailure(t *testing.T) {
 	initialWal := state.ActiveWal
 
 	// 2. Sabotage: Set path to a non-existent directory/file logic that fails OpenFile
-	// "/invalid/path" usually fails on permission or missing dir
 	state.Configuration.WriteAheadLogFilePath = f.RootDir + "/missing_dir/wal.log"
 
 	// 3. Trigger rotation
@@ -139,7 +138,10 @@ func TestIngest_Negative_RotationWalFailure(t *testing.T) {
 func TestHelper_PrepareEntries(t *testing.T) {
 	req := IngestReq{Key: "k", TTL: 10}
 	batch := []IngestReq{req}
-	entries := prepareEntries(batch)
+
+	// FIX: Pass nil for the reusable buffer argument
+	entries := prepareEntries(batch, nil)
+
 	if entries[0].ExpiryTimestamp == 0 {
 		t.Error("TTL calculation failed")
 	}
