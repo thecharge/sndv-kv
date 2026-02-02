@@ -1,0 +1,19 @@
+{
+  "data_directory_path": "./data-profile",
+  "write_ahead_log_file_path": "./data-profile/wal.log",
+  "log_directory_path": "./logs",
+  "server_port": 8080,
+  "maximum_memtable_size_in_bytes": 67108864,
+  "level_zero_compaction_trigger_count": 4,
+  "sstable_block_size_in_bytes": 4096,
+  "bloom_filter_false_positive_rate": 0.01,
+  "compaction_interval_in_seconds": 5,
+  "authentication_token": "",
+  "authentication_secret": "test",
+  "enable_disk_durability": false,
+  "maximum_cpu_count": 0,
+  "maximum_system_memory_in_bytes": 0,
+  "enable_pprof_profiling": true,
+  "key_cache_capacity_count": 40000,
+  "log_severity_level": "ERROR"
+}
