@@ -1,40 +1,67 @@
 package storage
 
 import (
+	"hash/fnv"
 	"sndv-kv/internal/common"
 	"sync"
 	"sync/atomic"
 )
 
-// MemoryTable is a simple in-memory key-value store
-// Uses a single map with RWMutex for thread safety
-type MemoryTable struct {
-	data      map[string]common.Entry
-	mutex     sync.RWMutex
-	totalSize int64
+const numShards = 32
+
+// MemoryShard is a single shard with its own lock
+type MemoryShard struct {
+	data  map[string]common.Entry
+	mutex sync.RWMutex
+	size  atomic.Int64
 }
 
-// NewMemoryTable creates a new MemoryTable with the given capacity hint
-func NewMemoryTable(capacity int) *MemoryTable {
-	return &MemoryTable{
-		data: make(map[string]common.Entry, capacity),
+// ShardedMemoryTable splits data across multiple shards to reduce lock contention
+type ShardedMemoryTable struct {
+	shards [numShards]*MemoryShard
+}
+
+// NewMemoryTable creates a new sharded memory table
+func NewMemoryTable(capacity int) *ShardedMemoryTable {
+	mt := &ShardedMemoryTable{}
+	shardCap := capacity / numShards
+	if shardCap < 1 {
+		shardCap = 1
 	}
+
+	for i := 0; i < numShards; i++ {
+		mt.shards[i] = &MemoryShard{
+			data: make(map[string]common.Entry, shardCap),
+		}
+	}
+	return mt
+}
+
+// getShardID returns the shard index for a key
+func (mt *ShardedMemoryTable) getShardID(key string) int {
+	h := fnv.New32a()
+	h.Write([]byte(key))
+	return int(h.Sum32() % numShards)
 }
 
 // Put adds or updates a key-value pair
-func (mt *MemoryTable) Put(key string, value []byte, expiry int64, isDeleted bool) {
+func (mt *ShardedMemoryTable) Put(key string, value []byte, expiry int64, isDeleted bool) {
+	shardID := mt.getShardID(key)
+	shard := mt.shards[shardID]
+
 	entrySize := int64(len(key) + len(value) + 16)
 
-	mt.mutex.Lock()
-	defer mt.mutex.Unlock()
+	shard.mutex.Lock()
+	defer shard.mutex.Unlock()
 
 	// Subtract old entry size if exists
-	if old, exists := mt.data[key]; exists {
-		atomic.AddInt64(&mt.totalSize, -(int64(len(old.Key) + len(old.Value) + 16)))
+	if old, exists := shard.data[key]; exists {
+		oldSize := int64(len(old.Key) + len(old.Value) + 16)
+		shard.size.Add(-oldSize)
 	}
 
 	// Add new entry
-	mt.data[key] = common.Entry{
+	shard.data[key] = common.Entry{
 		Key:             key,
 		Value:           value,
 		ExpiryTimestamp: expiry,
@@ -42,46 +69,48 @@ func (mt *MemoryTable) Put(key string, value []byte, expiry int64, isDeleted boo
 	}
 
 	// Add new entry size
-	atomic.AddInt64(&mt.totalSize, entrySize)
+	shard.size.Add(entrySize)
 }
 
 // Get retrieves a value by key
-func (mt *MemoryTable) Get(key string) (common.Entry, bool) {
-	mt.mutex.RLock()
-	defer mt.mutex.RUnlock()
+func (mt *ShardedMemoryTable) Get(key string) (common.Entry, bool) {
+	shardID := mt.getShardID(key)
+	shard := mt.shards[shardID]
 
-	val, ok := mt.data[key]
+	shard.mutex.RLock()
+	defer shard.mutex.RUnlock()
+
+	val, ok := shard.data[key]
 	return val, ok
 }
 
 // GetAll returns all entries (used for flushing)
-func (mt *MemoryTable) GetAll() []common.Entry {
-	mt.mutex.RLock()
-	defer mt.mutex.RUnlock()
-
-	entries := make([]common.Entry, 0, len(mt.data))
-	for _, e := range mt.data {
-		entries = append(entries, e)
-	}
-	return entries
+func (mt *ShardedMemoryTable) GetAll() []common.Entry {
+	var entries []common.Entry
+	return mt.DumpToSlice(entries)
 }
 
 // DumpToSlice appends all entries to the provided slice
-// This avoids allocation if the slice has capacity
-func (mt *MemoryTable) DumpToSlice(out []common.Entry) []common.Entry {
-	mt.mutex.RLock()
-	defer mt.mutex.RUnlock()
-
-	for _, e := range mt.data {
-		out = append(out, e)
+func (mt *ShardedMemoryTable) DumpToSlice(out []common.Entry) []common.Entry {
+	for i := 0; i < numShards; i++ {
+		shard := mt.shards[i]
+		shard.mutex.RLock()
+		for _, e := range shard.data {
+			out = append(out, e)
+		}
+		shard.mutex.RUnlock()
 	}
 	return out
 }
 
-// Size returns the approximate size in bytes
-func (mt *MemoryTable) Size() int64 {
-	return atomic.LoadInt64(&mt.totalSize)
+// Size returns the approximate total size in bytes
+func (mt *ShardedMemoryTable) Size() int64 {
+	var total int64
+	for i := 0; i < numShards; i++ {
+		total += mt.shards[i].size.Load()
+	}
+	return total
 }
 
-// Legacy compatibility: keep ShardedMemoryTable name as alias
-type ShardedMemoryTable = MemoryTable
+// Legacy type alias for compatibility
+type MemoryTable = ShardedMemoryTable

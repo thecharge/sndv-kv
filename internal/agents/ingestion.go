@@ -210,7 +210,8 @@ func createEntry(req IngestReq, now time.Time) common.Entry {
 	}
 
 	valCopy := make([]byte, len(req.Val))
-	copy(valCopy, req.Val)
+	// removed -
+	// copy(valCopy, req.Val)
 
 	return common.Entry{
 		Key:             req.Key,

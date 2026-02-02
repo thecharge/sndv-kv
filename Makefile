@@ -39,3 +39,11 @@ gclean:
 	git clean -fdx
 unit:
 	go test ./...
+prof:
+	go test -cpuprofile="cpu.prof" -memprofile="mem.prof" -benchtime=60s ./internal/agents/
+
+	go tool pprof -top -nodecount=30 cpu.prof > cpu_top.txt
+	go tool pprof -top -nodecount=30 -alloc_space mem.prof > mem_top.txt
+
+	type cpu_top.txt
+	type mem_top.txt
