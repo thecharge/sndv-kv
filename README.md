@@ -224,20 +224,37 @@ Here is the last quick benchmark I ran:
 evidence for the last quick bench in the results.json in th eroot of the repository (Have that it may vary from PC to PC the bench orchestrator uses much more evidence and integration test data - but is docker and python bound as well as it will require much more time to run in future a seprate folder with version to version benchmarks and configurations will be in place - but for now I do not have time to polish and will wait until there is a time for production or someone decides to implement that in MR)
 
 ```bash
- python .\quick_bench.py
-Building...
+python .\quick_bench.py
+======================================================================
+SNDV-KV PERFORMANCE BENCHMARK
+======================================================================
+Building server...
+✅ Build successful
 Starting server...
+✅ Server started
 
-Single ops (200)...
-  710 TPS
+Running Single PUT Benchmark (2,000 items, 20 workers)...
+  Progress: 500/2000
+  Progress: 1000/2000
+  Progress: 1500/2000
+  Progress: 2000/2000
+  → 522 TPS
+     Latency: min=3.4ms, avg=38.1ms, p95=30.9ms, max=2057.1ms
 
-Batch ops (1000)...
-  43,084 TPS
+Running Batch PUT Benchmark (20,000 items, batches of 100, 10 workers)...
+  Progress: 50/200 batches
+  Progress: 100/200 batches
+  Progress: 150/200 batches
+  Progress: 200/200 batches
+  → 89966 TPS
+     Batch latency: min=1.5ms, avg=10.5ms, p95=16.5ms, max=23.7ms
 
-========================================
-Single:        710 TPS
-Batch:      43,084 TPS
-========================================
+======================================================================
+Single:        522 TPS
+Batch:      89,966 TPS
+======================================================================
+
+✅ Saved results.json
 ```
 
 **We're slower than production systems.** That's expected for:
