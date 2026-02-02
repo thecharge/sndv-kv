@@ -41,10 +41,8 @@ var (
 	respChanPool = sync.Pool{
 		New: func() interface{} { return make(chan error, 1) },
 	}
-	// MEMORY OPTIMIZATION: Reuse batches to kill 15% allocs
 	entrySlicePool = sync.Pool{
 		New: func() interface{} {
-			// Pre-allocate capacity for typical batch size
 			s := make([]common.Entry, 0, 100)
 			return &s
 		},
@@ -143,7 +141,6 @@ func dispatchAndAwaitBatches(batches map[int][]IngestReq) error {
 }
 
 func runShard(id int, chans ShardChannels, bb *core.SystemState) {
-	// Pre-allocated buffer on stack/heap per shard
 	itemBuffer := make([]IngestReq, 0, 1000)
 
 	for {
@@ -162,8 +159,6 @@ func runShard(id int, chans ShardChannels, bb *core.SystemState) {
 }
 
 func drainSingleQueue(queue chan *IngestReq, batch *[]IngestReq) {
-	// Optimization: Batch-read available items without select-default
-	// We trust len() because we are the single consumer.
 	limit := 100
 	available := len(queue)
 	if available < limit {
@@ -181,9 +176,7 @@ func processBatch(shardID int, batch []IngestReq, bb *core.SystemState) {
 		return
 	}
 
-	// MEMORY FIX: Reuse pooled slice
 	entriesPtr := entrySlicePool.Get().(*[]common.Entry)
-	// Reset length, keep capacity
 	entries := (*entriesPtr)[:0]
 
 	entries = prepareEntries(batch, entries)
@@ -196,7 +189,6 @@ func processBatch(shardID int, batch []IngestReq, bb *core.SystemState) {
 
 	applyToMemTable(bb, batch, entries)
 
-	// Return to pool after use
 	entrySlicePool.Put(entriesPtr)
 
 	metrics.Global.WriteOps += int64(len(batch))
@@ -217,8 +209,6 @@ func createEntry(req IngestReq, now time.Time) common.Entry {
 		exp = now.Add(time.Duration(req.TTL) * time.Second).UnixNano()
 	}
 
-	// SAFE COPY: Copy bytes to prevent corruption from fasthttp buffer reuse
-	// This allocation is necessary for correctness.
 	valCopy := make([]byte, len(req.Val))
 	copy(valCopy, req.Val)
 
@@ -249,8 +239,17 @@ func applyToMemTable(bb *core.SystemState, batch []IngestReq, entries []common.E
 		}
 	}
 
+	// Check if rotation needed (atomic read, no lock)
 	if bb.MemTable.Size() >= bb.Configuration.MaximumMemtableSizeInBytes {
-		bb.FlushCondition.Signal() // Let flush agent handle it
+		// Take lock to rotate
+		bb.Mutex.Lock()
+
+		// Double-check under lock (another thread might have rotated)
+		if bb.MemTable.Size() >= bb.Configuration.MaximumMemtableSizeInBytes {
+			rotateMemTable(bb)
+		}
+
+		bb.Mutex.Unlock()
 	}
 }
 

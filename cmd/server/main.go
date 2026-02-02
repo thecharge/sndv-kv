@@ -39,11 +39,11 @@ func Run(configPath string) error {
 
 	// Start pprof server
 	// @TODO: need to test first
-    if cfg.EnablePprofProfiling {
-        go func() {
-            http.ListenAndServe(":6060", nil)
-        }()
-    }
+	if cfg.EnablePprofProfiling {
+		go func() {
+			http.ListenAndServe(":6060", nil)
+		}()
+	}
 
 	if err := logger.InitializeLogger(cfg.LogDirectoryPath, cfg.LogSeverityLevel); err != nil {
 		return err
