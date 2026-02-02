@@ -254,15 +254,6 @@ func applyToMemTable(bb *core.SystemState, batch []IngestReq, entries []common.E
 	}
 }
 
-func checkAndRotate(bb *core.SystemState) {
-	bb.Mutex.Lock()
-	defer bb.Mutex.Unlock()
-
-	if bb.MemTable.Size() >= bb.Configuration.MaximumMemtableSizeInBytes {
-		rotateMemTable(bb)
-	}
-}
-
 func rotateMemTable(bb *core.SystemState) {
 	logger.LogInfoEvent("Rotating MemTable...")
 	bb.ImmutableMem = append(bb.ImmutableMem, bb.MemTable)
