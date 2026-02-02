@@ -29,8 +29,10 @@ func TestRecoverWal(t *testing.T) {
 	system.ActiveWal.Close()
 
 	// Case 2: Disabled
-	cfg.EnableDiskDurability = false
+	// Fix: Update the configuration inside the system struct, not the local copy
+	system.Configuration.EnableDiskDurability = false
 	system.ActiveWal = nil
+
 	if err := recoverWal(system); err != nil {
 		t.Error("Should succeed when disabled")
 	}
